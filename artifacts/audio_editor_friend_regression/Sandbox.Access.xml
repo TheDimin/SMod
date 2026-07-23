@@ -1,0 +1,99 @@
+<?xml version="1.0"?>
+<doc>
+    <assembly>
+        <name>Sandbox.Access</name>
+    </assembly>
+    <members>
+        <member name="T:Sandbox.AccessControl">
+            <summary>
+            Test for access rules compliance. Can be shared to prevent unnecessary re-checking or resolving.
+            </summary>
+        </member>
+        <member name="M:Sandbox.AccessControl.TrustUnsafe(System.Byte[])">
+            <summary>
+            Dangerous! Create a <see cref="T:Sandbox.TrustedBinaryStream"/> of the given stream
+            without actually passing it through access control.
+            </summary>
+        </member>
+        <member name="M:Sandbox.AccessControl.VerifyAssembly(System.IO.Stream,Sandbox.TrustedBinaryStream@,System.Boolean)">
+            <summary>
+            Checks if an assembly passes whitelist checks.
+            </summary>
+            <param name="dll"></param>
+            <param name="outStream"><see cref="T:Sandbox.TrustedBinaryStream"/> wrapper around <paramref name="dll"/>.
+            Will close if <paramref name="dll"/> gets closed.</param>
+            <param name="addToWhitelist"></param>
+        </member>
+        <member name="M:Sandbox.AccessControl.ForgetAssembly(System.String)">
+            <summary>
+            If we're definitely never going to see this assembly again (because it's being unloaded for instance)
+            We can totally get rid of it and free all that lovely memory.
+            </summary>
+        </member>
+        <member name="M:Sandbox.AccessControl.ForgetOlderAssemblyDefinitions(System.Reflection.AssemblyName)">
+            <summary>
+            Forget all versions of the named assembly strictly older than this one.
+            </summary>
+        </member>
+        <member name="M:Sandbox.AccessControl.ForgetOlderAssemblyDefinitions(Mono.Cecil.AssemblyNameReference)">
+            <summary>
+            Forget all versions of the named assembly strictly older than this one.
+            </summary>
+        </member>
+        <member name="P:Sandbox.AccessControl.PackageAssemblyResolver">
+            <summary>
+            Called when a <c>package.*</c> assembly isn't already in <see cref="F:Sandbox.AccessControl.Assemblies"/>.
+            Return the raw DLL bytes so the resolver can build a Cecil definition on demand,
+            or return null to let the resolve fail normally.
+            </summary>
+        </member>
+        <member name="T:Sandbox.AccessSignature">
+            <summary>
+            Produces the exact "touch name" string that access control matches whitelist/blacklist patterns
+            against. Kept in one place so tooling (the whitelist generator) emits strings that are guaranteed
+            to match what the scanner produces - see <see cref="T:Sandbox.AssemblyAccess"/>.
+            </summary>
+        </member>
+        <member name="M:Sandbox.AccessSignature.Type(Mono.Cecil.TypeDefinition)">
+            <summary>
+            Signature for a type, e.g. <c>System.Private.CoreLib/System.Memory`1</c>.
+            </summary>
+        </member>
+        <member name="M:Sandbox.AccessSignature.Method(Mono.Cecil.MethodDefinition)">
+            <summary>
+            Signature for a method, e.g. <c>System.Private.CoreLib/System.Memory`1.Slice( System.Int32 )</c>.
+            Constructors, operators and property accessors (<c>get_</c>/<c>set_</c>) are all methods.
+            </summary>
+        </member>
+        <member name="T:Sandbox.AssemblyAccess">
+            <summary>
+            An assembly instance to verify against access control rules.
+            </summary>
+        </member>
+        <member name="M:Sandbox.AssemblyAccess.InitTouches(System.Byte[])">
+            <summary>
+            Clear the touches and fill them with everything this dll touches
+            </summary>
+        </member>
+        <member name="F:Sandbox.AssemblyAccess.skipMethods">
+            <summary>
+            These methods show up a lot and unexplitable, easy to skip
+            </summary>
+        </member>
+        <member name="M:Sandbox.AccessRules.IsInWhitelist(System.String)">
+            <summary>
+            Returns true if call is in the whitelist
+            </summary>
+        </member>
+        <member name="T:Sandbox.TrustedBinaryStream">
+            <summary>
+            Wraps a stream containing a binary that has passed access control.
+            </summary>
+        </member>
+        <member name="M:Sandbox.TrustedBinaryStream.CreateInternal(System.Byte[])">
+            <summary>
+            This should only be used by access control!
+            </summary>
+        </member>
+    </members>
+</doc>
