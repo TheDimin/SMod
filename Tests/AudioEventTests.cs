@@ -1,7 +1,7 @@
 using Sandbox;
 using System.Threading;
 using System.Threading.Tasks;
-using Smod.Audio;
+using Smod;
 
 [TestClass]
 public sealed class AudioEventTests
@@ -113,6 +113,24 @@ public sealed class AudioEventTests
 
 		Assert.IsFalse( result.IsValid );
 		Assert.IsTrue( result.Issues.Any( issue => issue.Path.EndsWith( "/TrimEnd" ) ) );
+	}
+
+	[TestMethod]
+	public void Validation_RejectsInvalidInstrumentFadeDurations()
+	{
+		var audioEvent = CreateEvent();
+		audioEvent.MasterTrack.Instruments[0].FadeInDuration = -1f;
+		audioEvent.MasterTrack.Instruments[0].FadeInCurveMidpoint = 2f;
+		audioEvent.MasterTrack.Instruments[0].FadeOutDuration = float.NaN;
+		audioEvent.MasterTrack.Instruments[0].FadeOutCurveMidpoint = -0.1f;
+
+		var result = AudioEventValidator.Validate( audioEvent );
+
+		Assert.IsFalse( result.IsValid );
+		Assert.IsTrue( result.Issues.Any( issue => issue.Path.EndsWith( "/FadeInDuration" ) ) );
+		Assert.IsTrue( result.Issues.Any( issue => issue.Path.EndsWith( "/FadeInCurveMidpoint" ) ) );
+		Assert.IsTrue( result.Issues.Any( issue => issue.Path.EndsWith( "/FadeOutDuration" ) ) );
+		Assert.IsTrue( result.Issues.Any( issue => issue.Path.EndsWith( "/FadeOutCurveMidpoint" ) ) );
 	}
 
 	[TestMethod]
@@ -595,6 +613,72 @@ public sealed class AudioEventTests
 	}
 
 	[TestMethod]
+	public void InstrumentFades_ModulateVolumeAcrossTheAuthoredClip()
+	{
+		var audioEvent = CreateEvent();
+		var instrument = audioEvent.MasterTrack.Instruments[0];
+		instrument.TrimEnd = 2f;
+		instrument.FadeInDuration = 1f;
+		instrument.FadeOutDuration = 1f;
+		var instance = AudioSystem.GetEvent( audioEvent ).CreateInstance();
+
+		instance.Start();
+		Assert.AreEqual( 0f, _backend.Voices[0].Volume, 0.0001f );
+
+		_timeline.Advance( 0.5f );
+		_ = instance.PlaybackState;
+		Assert.AreEqual( 0.5f, _backend.Voices[0].Volume, 0.0001f );
+
+		_timeline.Advance( 0.5f );
+		_ = instance.PlaybackState;
+		Assert.AreEqual( 1f, _backend.Voices[0].Volume, 0.0001f );
+
+		_timeline.Advance( 0.5f );
+		_ = instance.PlaybackState;
+		Assert.AreEqual( 0.5f, _backend.Voices[0].Volume, 0.0001f );
+	}
+
+	[TestMethod]
+	public void InstrumentFade_CombinesWithTrackAndInstanceGain()
+	{
+		var audioEvent = CreateEvent();
+		audioEvent.MasterTrack.Volume = 0.5f;
+		var instrument = audioEvent.MasterTrack.Instruments[0];
+		instrument.TrimEnd = 2f;
+		instrument.FadeInDuration = 1f;
+		var instance = AudioSystem.GetEvent( audioEvent ).CreateInstance();
+		instance.Volume = 0.5f;
+		instance.Start();
+
+		_timeline.Advance( 0.5f );
+		_ = instance.PlaybackState;
+
+		Assert.AreEqual( 0.125f, _backend.Voices[0].Volume, 0.0001f );
+	}
+
+	[TestMethod]
+	public void InstrumentFadeCurveMidpoint_ChangesTheEnvelopeShape()
+	{
+		var audioEvent = CreateEvent();
+		var instrument = audioEvent.MasterTrack.Instruments[0];
+		instrument.TrimEnd = 2f;
+		instrument.FadeInDuration = 1f;
+		instrument.FadeInCurveMidpoint = 1f;
+		instrument.FadeOutDuration = 1f;
+		instrument.FadeOutCurveMidpoint = 0f;
+		var instance = AudioSystem.GetEvent( audioEvent ).CreateInstance();
+		instance.Start();
+
+		_timeline.Advance( 0.5f );
+		_ = instance.PlaybackState;
+		Assert.AreEqual( 0.75f, _backend.Voices[0].Volume, 0.0001f );
+
+		_timeline.Advance( 1f );
+		_ = instance.PlaybackState;
+		Assert.AreEqual( 0.25f, _backend.Voices[0].Volume, 0.0001f );
+	}
+
+	[TestMethod]
 	public void TimelinePosition_SeeksRelativeToInstrumentTrimIn()
 	{
 		var audioEvent = CreateEvent();
@@ -879,11 +963,48 @@ public sealed class AudioEventTests
 		var instance = AudioSystem.GetEvent( audioEvent ).CreateInstance();
 		instance.SetParameterByNameWithLabel( "MusicState", "combat" );
 		instance.Start();
+		var voice = _backend.Voices.Single();
+		var initialTimeAssignments = voice.TimeAssignments;
 
 		_timeline.Advance( 1.2f );
 
 		Assert.AreEqual( 0.45f, instance.TimelinePosition, 0.0001f );
 		Assert.AreEqual( 1, instance.TimelineDebugSnapshot.JumpsLastUpdate );
+		Assert.AreEqual( initialTimeAssignments + 1, voice.TimeAssignments );
+	}
+
+	[TestMethod]
+	public void TimelinePlayback_DoesNotSeekForSampleQuantization()
+	{
+		var audioEvent = CreateEvent();
+		var instance = AudioSystem.GetEvent( audioEvent ).CreateInstance();
+		instance.Start();
+		var voice = _backend.Voices.Single();
+		var initialTimeAssignments = voice.TimeAssignments;
+
+		for ( var frame = 0; frame < 120; frame++ )
+		{
+			_timeline.Advance( 1f / 60f );
+			_ = instance.TimelinePosition;
+		}
+
+		Assert.AreEqual( initialTimeAssignments, voice.TimeAssignments );
+		Assert.AreEqual( 0, instance.TimelineDebugSnapshot.JumpsLastUpdate );
+	}
+
+	[TestMethod]
+	public void TimelinePosition_ExplicitChangeStillSeeks()
+	{
+		var audioEvent = CreateEvent();
+		var instance = AudioSystem.GetEvent( audioEvent ).CreateInstance();
+		instance.Start();
+		var voice = _backend.Voices.Single();
+		var initialTimeAssignments = voice.TimeAssignments;
+
+		instance.TimelinePosition = 0.25f;
+
+		Assert.AreEqual( initialTimeAssignments + 1, voice.TimeAssignments );
+		Assert.AreEqual( 0.25f, voice.Time, 0.0001f );
 	}
 
 	[TestMethod]
@@ -908,6 +1029,27 @@ public sealed class AudioEventTests
 
 		Assert.AreEqual( 0.42f, looping.TimelinePosition, 0.0001f );
 		Assert.AreEqual( 1.02f, exiting.TimelinePosition, 0.0001f );
+	}
+
+	[TestMethod]
+	public void TimelineLoop_SeeksActiveVoiceOnceWhenCrossed()
+	{
+		var audioEvent = CreateEvent();
+		audioEvent.LoopRegions.Add( new LoopRegion
+		{
+			Start = new TimelineTime( 0.4 ),
+			End = new TimelineTime( 1.0 )
+		} );
+		var instance = AudioSystem.GetEvent( audioEvent ).CreateInstance();
+		instance.Start();
+		var voice = _backend.Voices.Single();
+		var initialTimeAssignments = voice.TimeAssignments;
+
+		_timeline.Advance( 1.02f );
+		_ = instance.TimelinePosition;
+
+		Assert.AreEqual( 1, instance.TimelineDebugSnapshot.JumpsLastUpdate );
+		Assert.AreEqual( initialTimeAssignments + 1, voice.TimeAssignments );
 	}
 
 	[TestMethod]
@@ -1048,6 +1190,213 @@ public sealed class AudioEventTests
 	}
 
 	[TestMethod]
+	public void ContentEndLoop_WrapsWhenItsSelectedVariationFinishes()
+	{
+		var audioEvent = CreateEvent();
+		audioEvent.MasterTrack.Instruments[0].StartTime = 0.1f;
+		audioEvent.LoopRegions.Add( new LoopRegion
+		{
+			Start = new TimelineTime( 0 ),
+			End = new TimelineTime( 10 ),
+			EndMode = LoopEndMode.ContentEnd
+		} );
+		var instance = AudioSystem.GetEvent( audioEvent ).CreateInstance();
+		instance.Start();
+
+		_timeline.Advance( 0.5f );
+		_backend.Voices.Single().IsPlaying = false;
+		_ = instance.TimelinePosition;
+
+		Assert.AreEqual( 1, instance.TimelineDebugSnapshot.JumpsLastUpdate );
+		Assert.AreEqual( 0f, instance.TimelinePosition, 0.0001f );
+		Assert.AreEqual( 2, _backend.Voices.Count );
+		Assert.IsTrue( instance.InstrumentPlaybackStates.Single().IsPending );
+	}
+
+	[TestMethod]
+	public void ContentEndLoop_WaitsForPlayingAndPendingInRegionInstruments()
+	{
+		var firstInstrument = new AudioInstrument { Sound = CreateSoundEvent(), StartTime = 0.1f };
+		var secondInstrument = new AudioInstrument { Sound = CreateSoundEvent(), StartTime = 0.6f };
+		var audioEvent = new AudioEvent
+		{
+			MasterTrack = new AudioTrack
+			{
+				Name = "Master",
+				Instruments = new() { firstInstrument, secondInstrument }
+			},
+			LoopRegions = new()
+			{
+				new LoopRegion
+				{
+					Start = new TimelineTime( 0 ),
+					End = new TimelineTime( 10 ),
+					EndMode = LoopEndMode.ContentEnd
+				}
+			}
+		};
+		var instance = AudioSystem.GetEvent( audioEvent ).CreateInstance();
+		instance.Start();
+
+		_timeline.Advance( 0.2f );
+		_backend.Voices[0].IsPlaying = false;
+		_ = instance.TimelinePosition;
+
+		Assert.AreEqual( 0, instance.TimelineDebugSnapshot.JumpsLastUpdate );
+		Assert.IsTrue( instance.InstrumentPlaybackStates.Single( state => ReferenceEquals( state.Instrument, secondInstrument ) ).IsPending );
+
+		_timeline.Advance( 0.5f );
+		_backend.Voices[1].IsPlaying = false;
+		_ = instance.TimelinePosition;
+
+		Assert.AreEqual( 1, instance.TimelineDebugSnapshot.JumpsLastUpdate );
+		Assert.AreEqual( 0f, instance.TimelinePosition, 0.0001f );
+	}
+
+	[TestMethod]
+	public void ContentEndLoop_IgnoresIneligibleAndOutOfRegionInstruments()
+	{
+		var audioEvent = CreateEvent();
+		var state = AddLabeledState( audioEvent );
+		var inside = audioEvent.MasterTrack.Instruments[0];
+		inside.StartTime = 0.5f;
+		var ineligible = new AudioInstrument
+		{
+			Sound = CreateSoundEvent(),
+			StartTime = 0.6f,
+			Conditions = new() { new AudioParameterCondition { Parameter = state, Label = "combat" } }
+		};
+		var outside = new AudioInstrument { Sound = CreateSoundEvent(), StartTime = 3f };
+		audioEvent.MasterTrack.Instruments.AddRange( [ineligible, outside] );
+		audioEvent.LoopRegions.Add( new LoopRegion
+		{
+			Start = new TimelineTime( 0.4 ),
+			End = new TimelineTime( 2 ),
+			EndMode = LoopEndMode.ContentEnd
+		} );
+		var instance = AudioSystem.GetEvent( audioEvent ).CreateInstance();
+		instance.SetParameterByNameWithLabel( "MusicState", "exploration" );
+		instance.Start();
+
+		_timeline.Advance( 0.8f );
+		var insideVoice = _backend.Voices.Single( voice => ReferenceEquals( voice.Sound.Sounds.Single(), inside.Sound.Tracks[0].Sound ) );
+		insideVoice.IsPlaying = false;
+		_ = instance.TimelinePosition;
+
+		Assert.AreEqual( 1, instance.TimelineDebugSnapshot.JumpsLastUpdate );
+		Assert.AreEqual( 0.4f, instance.TimelinePosition, 0.0001f );
+		Assert.IsFalse( instance.InstrumentPlaybackStates.Any( state => ReferenceEquals( state.Instrument, ineligible ) ) );
+	}
+
+	[TestMethod]
+	public void ContentEndLoop_WithoutEligibleContentFallsBackToAuthoredEnd()
+	{
+		var audioEvent = CreateEvent();
+		audioEvent.MasterTrack.Instruments[0].StartTime = 0.1f;
+		audioEvent.LoopRegions.Add( new LoopRegion
+		{
+			Start = new TimelineTime( 0.4 ),
+			End = new TimelineTime( 1 ),
+			EndMode = LoopEndMode.ContentEnd
+		} );
+		var instance = AudioSystem.GetEvent( audioEvent ).CreateInstance();
+		instance.Start();
+		_backend.Voices.Single().IsPlaying = false;
+
+		_timeline.Advance( 0.6f );
+		Assert.AreEqual( 0.6f, instance.TimelinePosition, 0.0001f );
+		Assert.AreEqual( 0, instance.TimelineDebugSnapshot.JumpsLastUpdate );
+
+		_timeline.Advance( 0.42f );
+
+		Assert.AreEqual( 0.42f, instance.TimelinePosition, 0.0001f );
+		Assert.AreEqual( 1, instance.TimelineDebugSnapshot.JumpsLastUpdate );
+		Assert.AreEqual( 1, _backend.Voices.Count );
+	}
+
+	[TestMethod]
+	public void FixedLoop_DoesNotWrapWhenContentFinishesEarly()
+	{
+		var audioEvent = CreateEvent();
+		audioEvent.LoopRegions.Add( new LoopRegion
+		{
+			Start = new TimelineTime( 0 ),
+			End = new TimelineTime( 10 )
+		} );
+		var instance = AudioSystem.GetEvent( audioEvent ).CreateInstance();
+		instance.Start();
+		_backend.Voices.Single().IsPlaying = false;
+
+		_timeline.Advance( 0.5f );
+		_ = instance.TimelinePosition;
+
+		Assert.AreEqual( AudioPlaybackState.Stopped, instance.PlaybackState );
+		Assert.AreEqual( 0, instance.TimelineDebugSnapshot.JumpsLastUpdate );
+		Assert.AreEqual( 1, _backend.Voices.Count );
+	}
+
+	[TestMethod]
+	public void ContentEndLoop_RetriggersRandomExclusiveWithANewVariation()
+	{
+		var first = CreateSoundEvent().Tracks[0].Sound;
+		var second = CreateSoundEvent().Tracks[0].Sound;
+		var sound = new SoundEventResource
+		{
+			SelectionMode = SoundTrackSelectionMode.RandomExclusive,
+			Tracks = new()
+			{
+				new SoundEventTrack { Sound = first },
+				new SoundEventTrack { Sound = second }
+			}
+		};
+		var audioEvent = CreateEvent( sound );
+		audioEvent.LoopRegions.Add( new LoopRegion
+		{
+			Start = new TimelineTime( 0 ),
+			End = new TimelineTime( 10 ),
+			EndMode = LoopEndMode.ContentEnd
+		} );
+		var instance = AudioSystem.GetEvent( audioEvent ).CreateInstance();
+		instance.Start();
+		var initialVoice = _backend.Voices.Single();
+
+		_timeline.Advance( 0.5f );
+		initialVoice.IsPlaying = false;
+		_ = instance.TimelinePosition;
+
+		Assert.AreEqual( 2, _backend.Voices.Count );
+		Assert.AreNotSame( initialVoice.Sound.Sounds.Single(), _backend.Voices[1].Sound.Sounds.Single() );
+	}
+
+	[TestMethod]
+	public void ContentEndLoop_DoesNotOverrideACrossedTransition()
+	{
+		var audioEvent = CreateEvent();
+		var destination = new DestinationMarker { Name = "Bridge", Position = new TimelineTime( 0.25 ) };
+		audioEvent.DestinationMarkers.Add( destination );
+		audioEvent.TransitionMarkers.Add( new TransitionMarker
+		{
+			Position = new TimelineTime( 0.5 ),
+			DestinationMarkerId = destination.Id
+		} );
+		audioEvent.LoopRegions.Add( new LoopRegion
+		{
+			Start = new TimelineTime( 0 ),
+			End = new TimelineTime( 10 ),
+			EndMode = LoopEndMode.ContentEnd
+		} );
+		var instance = AudioSystem.GetEvent( audioEvent ).CreateInstance();
+		instance.Start();
+		_backend.Voices.Single().IsPlaying = false;
+
+		_timeline.Advance( 0.6f );
+		_ = instance.TimelinePosition;
+
+		Assert.AreEqual( 0.35f, instance.TimelinePosition, 0.0001f );
+		Assert.AreEqual( 1, instance.TimelineDebugSnapshot.JumpsLastUpdate );
+	}
+
+	[TestMethod]
 	public void QuantizedRegion_CancelsWhenConditionBecomesFalse()
 	{
 		var audioEvent = CreateEvent();
@@ -1095,6 +1444,191 @@ public sealed class AudioEventTests
 		Assert.IsTrue( validation.Issues.Any( issue => issue.Message.Contains( "unique" ) ) );
 		Assert.IsTrue( validation.Issues.Any( issue => issue.Message.Contains( "does not exist" ) ) );
 		Assert.IsTrue( validation.Issues.Any( issue => issue.Message.Contains( "overlaps" ) ) );
+	}
+
+	[TestMethod]
+	public void TimelineValidation_RejectsUnknownLoopEndMode()
+	{
+		var audioEvent = CreateEvent();
+		audioEvent.LoopRegions.Add( new LoopRegion
+		{
+			Start = new TimelineTime( 0 ),
+			End = new TimelineTime( 1 ),
+			EndMode = (LoopEndMode)999
+		} );
+
+		var validation = AudioEventValidator.Validate( audioEvent );
+
+		Assert.IsFalse( validation.IsValid );
+		Assert.IsTrue( validation.Issues.Any( issue => issue.Path.EndsWith( "/EndMode" ) ) );
+	}
+
+	[TestMethod]
+	public void SoundPointParameters_BuildFromEventDefaults()
+	{
+		var audioEvent = CreateEvent();
+		var intensity = new AudioParameter
+		{
+			Name = "Intensity",
+			Type = AudioParameterType.Continuous,
+			Minimum = 0f,
+			Maximum = 1f,
+			DefaultValue = 0.35f
+		};
+		var station = new AudioParameter
+		{
+			Name = "Station",
+			Type = AudioParameterType.Labeled,
+			Labels = new() { "news", "music" },
+			DefaultLabel = "music"
+		};
+		audioEvent.Parameters.AddRange( [intensity, station] );
+
+		var values = Smod.SoundPointComponent.SynchronizeParameters( audioEvent, null );
+
+		Assert.AreEqual( 2, values.Count );
+		Assert.AreSame( intensity, values[0].Parameter );
+		Assert.AreEqual( 0.35f, values[0].NumericValue );
+		Assert.AreSame( station, values[1].Parameter );
+		Assert.AreEqual( "music", values[1].LabelValue );
+	}
+
+	[TestMethod]
+	public void SoundPointParameters_PreserveCompatibleNamesAndNormalizeValues()
+	{
+		var previousNumber = new AudioParameter
+		{
+			Name = "Intensity",
+			Type = AudioParameterType.Continuous,
+			Minimum = 0f,
+			Maximum = 10f
+		};
+		var previousLabel = new AudioParameter
+		{
+			Name = "Station",
+			Type = AudioParameterType.Labeled,
+			Labels = new() { "news", "music" }
+		};
+		var existing = new List<SoundPointParameterValue>
+		{
+			new() { Parameter = previousNumber, NumericValue = 8f },
+			new() { Parameter = previousLabel, LabelValue = "MUSIC" }
+		};
+		var audioEvent = CreateEvent();
+		var replacementNumber = new AudioParameter
+		{
+			Name = "intensity",
+			Type = AudioParameterType.Continuous,
+			Minimum = 0f,
+			Maximum = 5f
+		};
+		var replacementLabel = new AudioParameter
+		{
+			Name = "station",
+			Type = AudioParameterType.Labeled,
+			Labels = new() { "news", "music" },
+			DefaultLabel = "news"
+		};
+		audioEvent.Parameters.AddRange( [replacementNumber, replacementLabel] );
+
+		var values = Smod.SoundPointComponent.SynchronizeParameters( audioEvent, existing );
+
+		Assert.AreEqual( 5f, values[0].NumericValue );
+		Assert.AreEqual( "music", values[1].LabelValue );
+		Assert.AreSame( replacementNumber, values[0].Parameter );
+		Assert.AreSame( replacementLabel, values[1].Parameter );
+	}
+
+	[TestMethod]
+	public void SoundPointParameters_ResetChangedTypesAndDiscardRemovedRows()
+	{
+		var oldParameter = new AudioParameter
+		{
+			Name = "Mode",
+			Type = AudioParameterType.Continuous,
+			Minimum = 0f,
+			Maximum = 10f
+		};
+		var removedParameter = new AudioParameter { Name = "Removed" };
+		var existing = new List<SoundPointParameterValue>
+		{
+			new() { Parameter = oldParameter, NumericValue = 7f },
+			new() { Parameter = removedParameter, NumericValue = 1f }
+		};
+		var replacement = new AudioParameter
+		{
+			Name = "Mode",
+			Type = AudioParameterType.Discrete,
+			Minimum = 0f,
+			Maximum = 4f,
+			DefaultValue = 2f
+		};
+		var audioEvent = CreateEvent();
+		audioEvent.Parameters.Add( replacement );
+
+		var values = Smod.SoundPointComponent.SynchronizeParameters( audioEvent, existing );
+
+		Assert.AreEqual( 1, values.Count );
+		Assert.AreSame( replacement, values[0].Parameter );
+		Assert.AreEqual( 2f, values[0].NumericValue );
+	}
+
+	[TestMethod]
+	public void SoundPointParameterValue_AppliesNumericAndLabeledChangesLive()
+	{
+		var audioEvent = CreateEvent();
+		var intensity = new AudioParameter
+		{
+			Name = "Intensity",
+			Type = AudioParameterType.Continuous,
+			Minimum = 0f,
+			Maximum = 1f
+		};
+		var station = new AudioParameter
+		{
+			Name = "Station",
+			Type = AudioParameterType.Labeled,
+			Labels = new() { "news", "music" },
+			DefaultLabel = "news"
+		};
+		audioEvent.Parameters.AddRange( [intensity, station] );
+		audioEvent.MasterTrack.Instruments[0].Automations.Add( new AudioAutomation
+		{
+			Parameter = intensity,
+			Target = AudioAutomationTarget.Volume,
+			Points = new()
+			{
+				new AudioAutomationPoint { Input = 0f, Output = 0.5f },
+				new AudioAutomationPoint { Input = 1f, Output = 1.5f }
+			}
+		} );
+		var instance = AudioSystem.GetEvent( audioEvent ).CreateInstance();
+		instance.Start();
+		var numeric = new SoundPointParameterValue { Parameter = intensity, NumericValue = 1f };
+		var labeled = new SoundPointParameterValue { Parameter = station, LabelValue = "music" };
+
+		numeric.ApplyTo( instance );
+		labeled.ApplyTo( instance );
+
+		Assert.AreEqual( 1.5f, _backend.Voices[0].Volume, 0.0001f );
+	}
+
+	[TestMethod]
+	public void SoundPointParameterValue_RejectsInvalidAuthoredRuntimeValues()
+	{
+		var audioEvent = CreateEvent();
+		var station = new AudioParameter
+		{
+			Name = "Station",
+			Type = AudioParameterType.Labeled,
+			Labels = new() { "news" },
+			DefaultLabel = "news"
+		};
+		audioEvent.Parameters.Add( station );
+		var instance = AudioSystem.GetEvent( audioEvent ).CreateInstance();
+		var value = new SoundPointParameterValue { Parameter = station, LabelValue = "missing" };
+
+		Assert.ThrowsExactly<ArgumentOutOfRangeException>( () => value.ApplyTo( instance ) );
 	}
 
 	private static AudioParameter AddLabeledState( AudioEvent audioEvent )
@@ -1211,11 +1745,22 @@ public sealed class AudioEventTests
 
 	private sealed class FakeAudioVoice : IAudioVoice
 	{
+		private float _time;
+
 		public SoundEvent Sound { get; set; }
 		public bool IsPlaying { get; set; } = true;
 		public SoundFile SelectedSound { get; set; }
 		public bool Paused { get; set; }
-		public float Time { get; set; }
+		public float Time
+		{
+			get => _time;
+			set
+			{
+				_time = value;
+				TimeAssignments++;
+			}
+		}
+		public int TimeAssignments { get; private set; }
 		public float Volume { get; set; } = 1f;
 		public float Pitch { get; set; } = 1f;
 		public Vector3 Position { get; set; }

@@ -1,0 +1,43 @@
+<Project Sdk="Microsoft.NET.Sdk.Razor">
+
+	<PropertyGroup>
+		<SboxRoot Condition="'$(SboxRoot)' == ''">$(FACEPUNCH_ENGINE)</SboxRoot>
+		<TargetFramework>net10.0</TargetFramework>
+		<GenerateDocumentationFile>true</GenerateDocumentationFile>
+		<AssemblyName>smod</AssemblyName>
+		<PackageId>smod</PackageId>
+		<LangVersion>14</LangVersion>
+		<NoWarn>1701;1702;1591;</NoWarn>
+		<WarningsAsErrors></WarningsAsErrors>
+		<TreatWarningsAsErrors>False</TreatWarningsAsErrors>
+		<AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+		<DefineConstants>SANDBOX</DefineConstants>
+		<AllowUnsafeBlocks>False</AllowUnsafeBlocks>
+		<OutputPath>$(SboxRoot)/.vs/output/</OutputPath>
+		<DocumentationFile>$(SboxRoot)/.vs/output/smod.xml</DocumentationFile>
+		<RootNamespace>Sandbox</RootNamespace>
+		<Nullable>disable</Nullable>
+	</PropertyGroup>
+
+	<ItemGroup>
+		<Using Include="Sandbox.Internal.GlobalGameNamespace" Static="true" />
+		<Using Include="Microsoft.AspNetCore.Components" />
+		<Using Include="Microsoft.AspNetCore.Components.Rendering" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<Analyzer Include="$(SboxRoot)/bin/managed/Sandbox.CodeUpgrader.dll"/> 
+		<Analyzer Include="$(SboxRoot)/bin/managed/Sandbox.Generator.dll"/> 
+		<Reference Include="$(SboxRoot)/bin/managed/Sandbox.System.dll"/> 
+		<Reference Include="$(SboxRoot)/bin/managed/Sandbox.Engine.dll"/> 
+		<Reference Include="$(SboxRoot)/bin/managed/Sandbox.Filesystem.dll"/> 
+		<Reference Include="$(SboxRoot)/bin/managed/Sandbox.Reflection.dll"/> 
+		<Reference Include="$(SboxRoot)/bin/managed/Sandbox.Mounting.dll"/> 
+		<Reference Include="$(SboxRoot)/bin/managed/Microsoft.AspNetCore.Components.dll"/> 
+	</ItemGroup>
+
+	<ItemGroup>
+		<ProjectReference Include="$(SboxRoot)/addons/base/code/Base Library.csproj" />
+	</ItemGroup>
+
+</Project>

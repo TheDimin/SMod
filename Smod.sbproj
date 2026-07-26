@@ -1,7 +1,7 @@
 {
-  "Title": "Audio",
+  "Title": "Smod",
   "Type": "library",
   "Org": "local",
-  "Ident": "smod_audio",
+  "Ident": "smod",
   "Schema": 1
 }

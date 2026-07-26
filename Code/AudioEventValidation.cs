@@ -1,4 +1,4 @@
-namespace Smod.Audio;
+namespace Smod;
 
 public sealed record AudioEventValidationIssue( string Path, string Message );
 
@@ -141,6 +141,8 @@ public static class AudioEventValidator
 			ValidateControlId( loop.Id, path, ids, result );
 			ValidateRange( loop.Start, loop.End, path, durationSamples, audioEvent.TimelineSampleRate, result );
 			ValidateTimelineConditions( loop.Conditions, $"{path}/Conditions", parameters, result );
+			if ( !Enum.IsDefined( loop.EndMode ) )
+				result.Error( $"{path}/EndMode", $"Unknown loop end mode '{loop.EndMode}'." );
 			for ( var previous = 0; previous < i; previous++ )
 			{
 				var other = audioEvent.LoopRegions[previous];
@@ -328,6 +330,14 @@ public static class AudioEventValidator
 			result.Error( $"{path}/TrimEnd", "Instrument trim end must be finite and non-negative." );
 		else if ( instrument.TrimEnd > 0f && instrument.TrimEnd <= instrument.TrimStart )
 			result.Error( $"{path}/TrimEnd", "Instrument trim end must be greater than trim start, or zero to use the source end." );
+		if ( !float.IsFinite( instrument.FadeInDuration ) || instrument.FadeInDuration < 0f )
+			result.Error( $"{path}/FadeInDuration", "Instrument fade-in duration must be finite and non-negative." );
+		if ( !float.IsFinite( instrument.FadeInCurveMidpoint ) || instrument.FadeInCurveMidpoint < 0f || instrument.FadeInCurveMidpoint > 1f )
+			result.Error( $"{path}/FadeInCurveMidpoint", "Instrument fade-in curve midpoint must be finite and between zero and one." );
+		if ( !float.IsFinite( instrument.FadeOutDuration ) || instrument.FadeOutDuration < 0f )
+			result.Error( $"{path}/FadeOutDuration", "Instrument fade-out duration must be finite and non-negative." );
+		if ( !float.IsFinite( instrument.FadeOutCurveMidpoint ) || instrument.FadeOutCurveMidpoint < 0f || instrument.FadeOutCurveMidpoint > 1f )
+			result.Error( $"{path}/FadeOutCurveMidpoint", "Instrument fade-out curve midpoint must be finite and between zero and one." );
 
 		ValidateConditions( instrument.Conditions, $"{path}/Conditions", parameters, result );
 		ValidateAutomations( instrument.Automations, $"{path}/Automations", parameters, result );

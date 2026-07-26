@@ -1,4 +1,4 @@
-namespace Smod.Audio;
+namespace Smod;
 
 public readonly record struct TimelineTime
 {
@@ -89,12 +89,19 @@ public sealed class TransitionRegion
 	[Property] public int Priority { get; set; }
 }
 
+public enum LoopEndMode
+{
+	Fixed,
+	ContentEnd
+}
+
 public sealed class LoopRegion
 {
 	[Property] public Guid Id { get; set; } = Guid.NewGuid();
 	[Property] public string Name { get; set; }
 	[Property] public TimelineTime Start { get; set; }
 	[Property] public TimelineTime End { get; set; }
+	[Property] public LoopEndMode EndMode { get; set; }
 	[Property, InlineEditor] public ParameterConditionSet Conditions { get; set; } = new();
 }
 
@@ -138,7 +145,10 @@ internal sealed class AudioTimelineControlEvaluator
 		_pendingExecution = -1;
 	}
 
-	public AudioTimelineEvaluationResult Advance( long currentSample, IReadOnlyDictionary<AudioParameter, AudioParameterValue> parameters )
+	public AudioTimelineEvaluationResult Advance(
+		long currentSample,
+		IReadOnlyDictionary<AudioParameter, AudioParameterValue> parameters,
+		Guid completedContentLoopId = default )
 	{
 		var start = _previousSample;
 		var end = Math.Max( start, currentSample );
@@ -148,7 +158,7 @@ internal sealed class AudioTimelineControlEvaluator
 
 		while ( true )
 		{
-			var decision = FindDecision( start, end, parameters );
+			var decision = FindDecision( start, end, parameters, completedContentLoopId, currentSample );
 			if ( decision is null )
 				break;
 			if ( jumps >= limit )
@@ -171,7 +181,12 @@ internal sealed class AudioTimelineControlEvaluator
 		return new AudioTimelineEvaluationResult( end, jumps, false, executedLoopRegionIds );
 	}
 
-	private TimelineDecision? FindDecision( long start, long end, IReadOnlyDictionary<AudioParameter, AudioParameterValue> parameters )
+	private TimelineDecision? FindDecision(
+		long start,
+		long end,
+		IReadOnlyDictionary<AudioParameter, AudioParameterValue> parameters,
+		Guid completedContentLoopId,
+		long contentCompletionSample )
 	{
 		if ( _pendingRegion != Guid.Empty )
 		{
@@ -240,11 +255,25 @@ internal sealed class AudioTimelineControlEvaluator
 
 		foreach ( var loop in _event.LoopRegions )
 		{
-			var loopEnd = loop.End.ToSamples( _event.TimelineSampleRate );
+			var authoredEnd = loop.End.ToSamples( _event.TimelineSampleRate );
+			var loopEnd = loop.EndMode == LoopEndMode.ContentEnd
+				&& loop.Id == completedContentLoopId
+				&& contentCompletionSample >= loop.Start.ToSamples( _event.TimelineSampleRate )
+				&& contentCompletionSample < authoredEnd
+					? contentCompletionSample
+					: authoredEnd;
 			if ( start < loopEnd && end >= loopEnd && Matches( loop.Conditions, parameters ) )
 				return new TimelineDecision( loopEnd, loop.Start.ToSamples( _event.TimelineSampleRate ), loop.Id, true );
 		}
 		return null;
+	}
+
+	internal static bool MatchesLoopConditions(
+		LoopRegion loop,
+		IReadOnlyDictionary<AudioParameter, AudioParameterValue> parameters )
+	{
+		ArgumentNullException.ThrowIfNull( loop );
+		return Matches( loop.Conditions, parameters );
 	}
 
 	private TimelineDecision DestinationDecision( long execution, Guid destinationId, Guid sourceId )
