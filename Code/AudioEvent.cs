@@ -1,4 +1,4 @@
-namespace ValArk.Audio;
+namespace Smod;
 
 [AssetType( Name = "Audio Event", Extension = "audevt", Category = "Audio", Flags = AssetTypeFlags.NoEmbedding )]
 public sealed partial class AudioEvent : GameResource
@@ -77,6 +77,18 @@ public sealed class AudioInstrument
 
 	[Property, Range( 0f, 300f ), Title( "Trim End" ), Description( "Source time in seconds where playback stops. Zero uses the end of the selected sound." )]
 	public float TrimEnd { get; set; }
+
+	[Property, Range( 0f, 300f ), Title( "Fade In" ), Description( "Seconds used to fade the instrument from silence to its authored volume." )]
+	public float FadeInDuration { get; set; }
+
+	[Property, Range( 0f, 1f ), Title( "Fade In Curve" ), Description( "Normalized gain of the fade-in curve's middle control point." )]
+	public float FadeInCurveMidpoint { get; set; } = 0.5f;
+
+	[Property, Range( 0f, 300f ), Title( "Fade Out" ), Description( "Seconds used to fade the instrument from its authored volume to silence." )]
+	public float FadeOutDuration { get; set; }
+
+	[Property, Range( 0f, 1f ), Title( "Fade Out Curve" ), Description( "Normalized gain of the fade-out curve's middle control point." )]
+	public float FadeOutCurveMidpoint { get; set; } = 0.5f;
 
 	[Property, InlineEditor]
 	public List<AudioParameterCondition> Conditions { get; set; } = new();

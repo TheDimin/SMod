@@ -1,7 +1,7 @@
 {
-  "Title": "Audio",
+  "Title": "Smod",
   "Type": "library",
   "Org": "local",
-  "Ident": "valark_audio",
+  "Ident": "smod",
   "Schema": 1
 }

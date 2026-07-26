@@ -1,7 +1,6 @@
 using System.Threading;
 using System.Threading.Tasks;
-
-namespace ValArk.Audio;
+namespace Smod;
 
 public enum AudioStopMode
 {
@@ -433,8 +432,11 @@ public sealed class AudioEventInstance
 
 		if ( !_paused )
 			ProcessTimelineControl();
+		ApplyInstanceGain();
 
-		if ( _voices.All( voice => !voice.Pending && !voice.Voice.IsPlaying ) && !HasConditionalPlayback() )
+		if ( _voices.All( voice => !voice.Pending && !voice.Voice.IsPlaying )
+			&& !HasConditionalPlayback()
+			&& !HasActiveContentLoop() )
 		{
 			_timelinePosition = CurrentTimelinePosition;
 			_timelineAnchor = AudioSystem.TimelineScheduler.Now;
@@ -457,9 +459,10 @@ public sealed class AudioEventInstance
 		var rawSample = ToTimelineSample( rawPosition );
 		if ( rawSample == _timelineDebug.CurrentSample )
 			return;
-		var result = _timelineControl.Advance( rawSample, _parameters );
+		var completedContentLoopId = FindCompletedContentLoop( rawSample );
+		var result = _timelineControl.Advance( rawSample, _parameters, completedContentLoopId );
 		var resolvedPosition = (float)result.Position / _description.Resource.TimelineSampleRate;
-		var jumped = MathF.Abs( resolvedPosition - rawPosition ) > 0.000001f;
+		var jumped = result.Jumps > 0;
 		if ( jumped )
 		{
 			var retriggeredInstruments = PrepareLoopRetriggers( result.ExecutedLoopRegionIds );
@@ -497,6 +500,44 @@ public sealed class AudioEventInstance
 				return loop.Id;
 		}
 		return Guid.Empty;
+	}
+
+	private Guid FindCompletedContentLoop( long sample )
+	{
+		var audioEvent = _description.Resource;
+		foreach ( var loop in audioEvent.LoopRegions )
+		{
+			if ( loop.EndMode != LoopEndMode.ContentEnd
+				|| sample < loop.Start.ToSamples( audioEvent.TimelineSampleRate )
+				|| sample >= loop.End.ToSamples( audioEvent.TimelineSampleRate )
+				|| !AudioTimelineControlEvaluator.MatchesLoopConditions( loop, _parameters ) )
+				continue;
+
+			var loopVoices = _voices
+				.Where( voice => voice.Instrument.StartTime >= loop.Start.Seconds
+					&& voice.Instrument.StartTime < loop.End.Seconds )
+				.ToArray();
+			if ( loopVoices.Length > 0 && loopVoices.All( voice => !voice.Pending && !voice.Voice.IsPlaying ) )
+				return loop.Id;
+		}
+
+		return Guid.Empty;
+	}
+
+	private bool HasActiveContentLoop()
+	{
+		var sample = ToTimelineSample( CurrentTimelinePosition );
+		var audioEvent = _description.Resource;
+		foreach ( var loop in audioEvent.LoopRegions )
+		{
+			if ( loop.EndMode == LoopEndMode.ContentEnd
+				&& sample >= loop.Start.ToSamples( audioEvent.TimelineSampleRate )
+				&& sample < loop.End.ToSamples( audioEvent.TimelineSampleRate )
+				&& AudioTimelineControlEvaluator.MatchesLoopConditions( loop, _parameters ) )
+				return true;
+		}
+
+		return false;
 	}
 
 	private AudioParameter RequireParameter( string name )
@@ -559,6 +600,11 @@ public sealed class AudioEventInstance
 				_voices.Remove( playingVoice );
 				playingVoice = null;
 			}
+			if ( retriggeredInstruments is not null
+				&& playingVoice is not null
+				&& !playingVoice.Voice.IsPlaying
+				&& !retriggeredInstruments.Contains( request.Instrument ) )
+				continue;
 			if ( playingVoice is null || !playingVoice.Voice.IsPlaying )
 			{
 				if ( playingVoice is not null )
@@ -703,6 +749,7 @@ public sealed class AudioEventInstance
 		playingVoice.Pending = false;
 		playingVoice.Voice.Time = EffectiveTrimStart( playingVoice );
 		playingVoice.Voice.Paused = _paused;
+		ApplyGain( playingVoice );
 		if ( !_paused )
 			ScheduleTrimStop( playingVoice );
 	}
@@ -771,8 +818,38 @@ public sealed class AudioEventInstance
 			|| _auditionMutedTracks.Contains( playingVoice.Track );
 		playingVoice.Voice.Volume = muted
 			? 0f
-			: playingVoice.NativeVolume * playingVoice.EventVolume * _volume;
+			: playingVoice.NativeVolume * playingVoice.EventVolume * _volume * InstrumentFadeGain( playingVoice );
 		playingVoice.Voice.Pitch = playingVoice.NativePitch * playingVoice.EventPitch * _pitch;
+	}
+
+	private float InstrumentFadeGain( PlayingVoice playingVoice )
+	{
+		if ( playingVoice.Pending )
+			return playingVoice.Instrument.FadeInDuration > 0f ? 0f : 1f;
+
+		var localPosition = MathF.Max( 0f, CurrentTimelinePosition - playingVoice.Instrument.StartTime );
+		var gain = 1f;
+		if ( playingVoice.Instrument.FadeInDuration > 0f )
+		{
+			var progress = (localPosition / playingVoice.Instrument.FadeInDuration).Clamp( 0f, 1f );
+			gain = MathF.Min( gain, EvaluateFadeCurve( 0f, playingVoice.Instrument.FadeInCurveMidpoint, 1f, progress ) );
+		}
+
+		var trimEnd = ResolveTrimEnd( playingVoice );
+		if ( playingVoice.Instrument.FadeOutDuration > 0f && float.IsFinite( trimEnd ) )
+		{
+			var playbackDuration = MathF.Max( 0f, trimEnd - EffectiveTrimStart( playingVoice ) );
+			var remaining = MathF.Max( 0f, playbackDuration - localPosition );
+			var progress = (1f - remaining / playingVoice.Instrument.FadeOutDuration).Clamp( 0f, 1f );
+			gain = MathF.Min( gain, EvaluateFadeCurve( 1f, playingVoice.Instrument.FadeOutCurveMidpoint, 0f, progress ) );
+		}
+		return gain.Clamp( 0f, 1f );
+	}
+
+	private static float EvaluateFadeCurve( float start, float midpoint, float end, float progress )
+	{
+		var inverse = 1f - progress;
+		return inverse * inverse * start + 2f * inverse * progress * midpoint + progress * progress * end;
 	}
 
 	private void EnsureValid()

@@ -1,4 +1,4 @@
-# Audio library agent guide
+# Smod library agent guide
 
 Read `README.md`, then `FMOD_FEATURE_GAPS.md`, before changing the public API.
 

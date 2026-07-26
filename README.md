@@ -17,12 +17,23 @@ instance.Start();
 instance.Release();
 ```
 
+For persistent scene audio such as radios, add a `SoundPointComponent` to a
+game object and select an `.audevt`. Its inspector derives continuous,
+discrete, and labeled controls from that event's parameters. `PlayOnStart`
+defaults to enabled, while `Play()` and `Stop()` provide explicit runtime
+control. The component keeps the event instance at the game object's world
+position and forwards parameter value changes while it plays.
+
 The naming follows FMOD Studio/API concepts: `AudioSystem`, event description,
 event instance, tracks, instruments, parameters, `Start`, `Stop`, and `Release`.
 It is not an FMOD binding; native playback remains s&box `SoundEvent` playback.
 Each `.sndevt` owns its only playable clip list plus ranged volume and pitch,
 attenuation, occlusion, reverb, and mixer properties. `AudioInstrument` does
-not duplicate those settings. Eligible tracks use the authored `Random` or
+not duplicate those settings. Instruments can author fade-in and fade-out
+durations with adjustable Bézier midpoint controls; overlapping faded
+instruments form a crossfade, and the
+fade envelope multiplies the existing track, automation, audition, and instance
+gain. Eligible tracks use the authored `Random` or
 `RandomExclusive` selection mode when an instance starts; selection is retained
 while it remains eligible during live parameter changes.
 
@@ -49,15 +60,28 @@ that begin before the region keep their current selection. `TimelineDebugSnapsho
 exposes the current sample, active loop, pending destination and execution
 sample, and jump-limit state.
 
+Loop regions use a fixed authored end by default. `ContentEnd` loops can wrap
+earlier when every currently eligible playing or pending instrument authored
+inside the region has completed. The selected `.sndevt` variations determine
+completion for that iteration, while the authored end remains the hard fallback
+when no eligible content can establish an earlier boundary.
+
 ## Authoring and validation
 
 Double-click an `.audevt` to open the dedicated Audio Event Editor. It provides
 whole-event transport, seek and zoom controls, master and regular timeline
-tracks with direct volume/pitch faders, move-only instrument blocks, waveform overlays, live parameter
+tracks with direct volume/pitch faders, movable/trim-able instrument blocks, waveform overlays, live parameter
 controls, automation curves, condition regions, a context inspector, and an
 embedded `.sndevt` inspector. Drop a sound file onto a track to place an
 instrument at that time. `Ctrl+S` saves dirty `.audevt` and referenced
 `.sndevt` resources together.
+
+Selected or hovered instruments show fade handles at the top of their start and
+end edges. Drag a handle inward to author a fade and overlap two
+instruments to create a crossfade. Each fade also shows a middle control point;
+drag it vertically to bend the fade above or below its linear shape. The
+envelope is drawn directly over the clip, while dragging the full-height side
+edges continues to trim the source.
 
 Timeline-control buttons and the timeline context menu create destination
 markers, transition markers, transition regions, and loop regions at the
@@ -66,6 +90,16 @@ resize from either edge. Selecting a control exposes its conditions,
 quantization, priority, name, and timing in the inspector. Transition context
 menus select or navigate to stable-ID destinations, and destination inspection
 lists every authored reference.
+
+Beat- and bar-quantized transition regions also expose editor-only tempo
+assistance. When the authored BPM is missing or outside 40–240 BPM, the editor
+lazily decodes overlapping instrument variations, estimates their tempos in the
+background, and shows per-clip confidence and half/double-time ambiguity. It
+only suggests a median when the clips agree, and never changes the serialized
+tempo until the author chooses **Apply Tempo**. **Analyze Again** is available
+for plausible authored tempos without loading samples automatically.
+`BeatsPerBar` remains author-controlled because PCM analysis does not infer
+meter.
 
 Incomplete events can still be saved. Preview is disabled until
 `AudioEventValidator` reports a valid event. `audio.validate_events` validates
