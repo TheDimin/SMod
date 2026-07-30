@@ -3,6 +3,33 @@ namespace Smod;
 [AssetType( Name = "Audio Event", Extension = "audevt", Category = "Audio", Flags = AssetTypeFlags.NoEmbedding )]
 public sealed partial class AudioEvent : GameResource
 {
+	[Property]
+	public bool UI { get; set; }
+
+	[Property]
+	public int Decibels { get; set; } = 70;
+
+	[Property]
+	public bool OcclusionEnabled { get; set; } = true;
+
+	[Property]
+	public bool ReverbEnabled { get; set; } = true;
+
+	[Property]
+	public bool AirAbsorption { get; set; } = true;
+
+	[Property]
+	public bool DistanceAttenuation { get; set; } = true;
+
+	[Property]
+	public float Distance { get; set; } = 15000f;
+
+	[Property]
+	public Curve Falloff { get; set; } = new SoundEvent().Falloff;
+
+	[Property]
+	public Sandbox.Audio.MixerHandle DefaultMixer { get; set; }
+
 	[Property, Range( 8000, 192000 ), Title( "Timeline Sample Rate" )]
 	public int TimelineSampleRate { get; set; } = 48000;
 
@@ -38,6 +65,30 @@ public sealed partial class AudioEvent : GameResource
 
 	[Property, Range( 0f, 10f ), Title( "Fade Out Duration" )]
 	public float FadeOutDuration { get; set; } = 0.1f;
+
+	internal SoundEvent CreatePlaybackEvent( SoundEventResource sound, SoundEventTrack track )
+	{
+		ArgumentNullException.ThrowIfNull( sound );
+		ArgumentNullException.ThrowIfNull( track );
+#pragma warning disable CS0618
+		return new SoundEvent
+		{
+			UI = UI,
+			Volume = sound.Volume,
+			Pitch = sound.Pitch,
+			Decibels = Decibels,
+			SelectionMode = SoundEvent.SoundSelectionMode.Random,
+			Sounds = new List<SoundFile> { track.Sound },
+			OcclusionEnabled = OcclusionEnabled,
+			ReverbEnabled = ReverbEnabled,
+			AirAbsorption = AirAbsorption,
+			DistanceAttenuation = DistanceAttenuation,
+			Distance = Distance,
+			Falloff = Falloff,
+			DefaultMixer = DefaultMixer
+		};
+#pragma warning restore CS0618
+	}
 }
 
 public sealed class AudioTrack
@@ -101,40 +152,13 @@ public sealed class AudioInstrument
 public sealed class SoundEventResource : GameResource
 {
 	[Property]
-	public bool UI { get; set; }
-
-	[Property]
 	public RangedFloat Volume { get; set; } = new( 1f );
 
 	[Property]
 	public RangedFloat Pitch { get; set; } = new( 1f );
 
 	[Property]
-	public int Decibels { get; set; } = 70;
-
-	[Property]
 	public SoundTrackSelectionMode SelectionMode { get; set; } = SoundTrackSelectionMode.Random;
-
-	[Property]
-	public bool OcclusionEnabled { get; set; } = true;
-
-	[Property]
-	public bool ReverbEnabled { get; set; } = true;
-
-	[Property]
-	public bool AirAbsorption { get; set; } = true;
-
-	[Property]
-	public bool DistanceAttenuation { get; set; } = true;
-
-	[Property]
-	public float Distance { get; set; } = 15000f;
-
-	[Property]
-	public Curve Falloff { get; set; } = new SoundEvent().Falloff;
-
-	[Property]
-	public Sandbox.Audio.MixerHandle DefaultMixer { get; set; }
 
 	[Property, InlineEditor, Title( "Tracks" )]
 	public List<SoundEventTrack> Tracks { get; set; } = new();
@@ -164,29 +188,6 @@ public sealed class SoundEventResource : GameResource
 
 		_lastSelectedTrack = selected;
 		return selected;
-	}
-
-	internal SoundEvent CreatePlaybackEvent( SoundEventTrack track )
-	{
-		ArgumentNullException.ThrowIfNull( track );
-#pragma warning disable CS0618
-		return new SoundEvent
-		{
-			UI = UI,
-			Volume = Volume,
-			Pitch = Pitch,
-			Decibels = Decibels,
-			SelectionMode = SoundEvent.SoundSelectionMode.Random,
-			Sounds = new List<SoundFile> { track.Sound },
-			OcclusionEnabled = OcclusionEnabled,
-			ReverbEnabled = ReverbEnabled,
-			AirAbsorption = AirAbsorption,
-			DistanceAttenuation = DistanceAttenuation,
-			Distance = Distance,
-			Falloff = Falloff,
-			DefaultMixer = DefaultMixer
-		};
-#pragma warning restore CS0618
 	}
 }
 

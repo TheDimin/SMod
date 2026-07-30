@@ -34,6 +34,45 @@ public sealed class AudioEventTests
 	}
 
 	[TestMethod]
+	public void PlaybackSettings_AreOwnedOnlyByAudioEvent()
+	{
+		var movedProperties = new[]
+		{
+			nameof( AudioEvent.UI ),
+			nameof( AudioEvent.Decibels ),
+			nameof( AudioEvent.OcclusionEnabled ),
+			nameof( AudioEvent.ReverbEnabled ),
+			nameof( AudioEvent.AirAbsorption ),
+			nameof( AudioEvent.DistanceAttenuation ),
+			nameof( AudioEvent.Distance ),
+			nameof( AudioEvent.Falloff ),
+			nameof( AudioEvent.DefaultMixer )
+		};
+
+		foreach ( var propertyName in movedProperties )
+		{
+			Assert.IsNotNull( typeof( AudioEvent ).GetProperty( propertyName ), propertyName );
+			Assert.IsNull( typeof( SoundEventResource ).GetProperty( propertyName ), propertyName );
+		}
+
+		Assert.IsNotNull( typeof( SoundEventResource ).GetProperty( nameof( SoundEventResource.Volume ) ) );
+		Assert.IsNotNull( typeof( SoundEventResource ).GetProperty( nameof( SoundEventResource.Pitch ) ) );
+		Assert.IsNotNull( typeof( SoundEventResource ).GetProperty( nameof( SoundEventResource.SelectionMode ) ) );
+		Assert.IsNotNull( typeof( SoundEventResource ).GetProperty( nameof( SoundEventResource.Tracks ) ) );
+	}
+
+	[TestMethod]
+	public void Validation_RejectsInvalidAudioEventDistance()
+	{
+		var audioEvent = CreateEvent();
+		audioEvent.Distance = float.NaN;
+
+		var result = AudioEventValidator.Validate( audioEvent );
+
+		Assert.IsTrue( result.Issues.Any( issue => issue.Path.EndsWith( "/Distance" ) ) );
+	}
+
+	[TestMethod]
 	public void Validation_AssertValidFormatsEveryIssueOnItsOwnLine()
 	{
 		var result = AudioEventValidator.Validate( new AudioEvent { MasterTrack = null } );
@@ -914,37 +953,57 @@ public sealed class AudioEventTests
 	}
 
 	[TestMethod]
-	public void SelectedTrack_PreservesDirectSoundEventSettings()
+	public void EveryVoice_UsesSharedEventSettingsAndItsSourceVariationSettings()
 	{
-		var sound = CreateSoundEvent();
-		sound.UI = true;
-		sound.OcclusionEnabled = false;
-		sound.ReverbEnabled = false;
-		sound.AirAbsorption = false;
-		sound.DistanceAttenuation = false;
-		sound.Volume = new RangedFloat( 0.25f, 0.5f );
-		sound.Pitch = new RangedFloat( 0.8f, 1.2f );
-		sound.Decibels = 83;
-		sound.Distance = 4321f;
+		var firstSound = CreateSoundEvent();
+		firstSound.Volume = new RangedFloat( 0.25f, 0.5f );
+		firstSound.Pitch = new RangedFloat( 0.8f, 1.2f );
+		var secondSound = CreateSoundEvent();
+		secondSound.Volume = new RangedFloat( 0.6f, 0.75f );
+		secondSound.Pitch = new RangedFloat( 1.1f, 1.3f );
+		var audioEvent = CreateEvent( firstSound );
+		audioEvent.UI = true;
+		audioEvent.OcclusionEnabled = false;
+		audioEvent.ReverbEnabled = false;
+		audioEvent.AirAbsorption = false;
+		audioEvent.DistanceAttenuation = false;
+		audioEvent.Decibels = 83;
+		audioEvent.Distance = 4321f;
+		audioEvent.Tracks.Add( new AudioTrack
+		{
+			Name = "Second",
+			Instruments = new() { new AudioInstrument { Sound = secondSound } }
+		} );
 
-		var instance = AudioSystem.GetEvent( CreateEvent( sound ) ).CreateInstance();
+		var instance = AudioSystem.GetEvent( audioEvent ).CreateInstance();
 		instance.Start();
 
-		var playbackEvent = _backend.Voices.Single().Sound;
-		Assert.IsTrue( playbackEvent.UI );
-		Assert.IsFalse( playbackEvent.OcclusionEnabled );
-		Assert.IsFalse( playbackEvent.ReverbEnabled );
-		Assert.IsFalse( playbackEvent.AirAbsorption );
-		Assert.IsFalse( playbackEvent.DistanceAttenuation );
-		Assert.AreEqual( 0.25f, playbackEvent.Volume.Min );
-		Assert.AreEqual( 0.5f, playbackEvent.Volume.Max );
-		Assert.AreEqual( 0.8f, playbackEvent.Pitch.Min );
-		Assert.AreEqual( 1.2f, playbackEvent.Pitch.Max );
+		Assert.AreEqual( 2, _backend.Voices.Count );
+		foreach ( var playbackEvent in _backend.Voices.Select( voice => voice.Sound ) )
+		{
+			Assert.IsTrue( playbackEvent.UI );
+			Assert.IsFalse( playbackEvent.OcclusionEnabled );
+			Assert.IsFalse( playbackEvent.ReverbEnabled );
+			Assert.IsFalse( playbackEvent.AirAbsorption );
+			Assert.IsFalse( playbackEvent.DistanceAttenuation );
 #pragma warning disable CS0618
-		Assert.AreEqual( 83, playbackEvent.Decibels );
+			Assert.AreEqual( 83, playbackEvent.Decibels );
 #pragma warning restore CS0618
-		Assert.AreEqual( 4321f, playbackEvent.Distance );
-		Assert.AreSame( sound.Tracks[0].Sound, playbackEvent.Sounds.Single() );
+			Assert.AreEqual( 4321f, playbackEvent.Distance );
+			Assert.AreEqual( audioEvent.Falloff, playbackEvent.Falloff );
+			Assert.AreEqual( audioEvent.DefaultMixer, playbackEvent.DefaultMixer );
+		}
+
+		Assert.AreEqual( 0.25f, _backend.Voices[0].Sound.Volume.Min );
+		Assert.AreEqual( 0.5f, _backend.Voices[0].Sound.Volume.Max );
+		Assert.AreEqual( 0.8f, _backend.Voices[0].Sound.Pitch.Min );
+		Assert.AreEqual( 1.2f, _backend.Voices[0].Sound.Pitch.Max );
+		Assert.AreSame( firstSound.Tracks[0].Sound, _backend.Voices[0].Sound.Sounds.Single() );
+		Assert.AreEqual( 0.6f, _backend.Voices[1].Sound.Volume.Min );
+		Assert.AreEqual( 0.75f, _backend.Voices[1].Sound.Volume.Max );
+		Assert.AreEqual( 1.1f, _backend.Voices[1].Sound.Pitch.Min );
+		Assert.AreEqual( 1.3f, _backend.Voices[1].Sound.Pitch.Max );
+		Assert.AreSame( secondSound.Tracks[0].Sound, _backend.Voices[1].Sound.Sounds.Single() );
 	}
 
 	[TestMethod]

@@ -23,14 +23,14 @@ Primary references:
 | Event resource | Basic | `.audevt` owns a master track, tracks, parameters, fade-out duration, and a timeline derived from its instruments. |
 | Event description and instance | Basic | `AudioSystem.GetEvent`, `CreateInstance`, `Start`, `Stop`, `Release`, playback state, pause, and timeline seek. No instance pooling, GUID lookup, callbacks, or virtualization. |
 | Audio and master tracks | Basic | Concurrent tracks, per-track gain/pitch, parameter conditions, master gain/pitch/conditions, and timeline placement are supported. False regular-track conditions mute that track; false master conditions mute the event. No routing graph, persistent mute/solo state, return tracks, track colors, or effect deck. |
-| Single instrument | Basic | References one `SoundEventResource`; `.sndevt` directly owns its sole playable track list and playback properties. The event instrument adds timeline placement, conditions, trim, fade-in/fade-out envelopes with adjustable Bézier midpoint controls, and automation. Overlapping faded instruments provide crossfades. |
+| Single instrument | Basic | References one `SoundEventResource`; `.sndevt` directly owns its sole playable track list, ranged volume/pitch, and selection mode. The owning `.audevt` supplies shared native playback settings, while the instrument adds timeline placement, conditions, trim, fade-in/fade-out envelopes with adjustable Bézier midpoint controls, and automation. Overlapping faded instruments provide crossfades. |
 | Multi instrument | Basic | Conditioned sound-file tracks are selected from the eligible set using random or random-exclusive selection and support per-track source offset and playback length. No nested events or weighted selection. |
 | Continuous parameter | Basic | Numeric range/default, live condition transitions, and live volume/pitch automation. No velocity, seek speed, or parameter-scoped trigger behavior. |
 | Discrete parameter | Basic | Integral range/default with live conditions and automation. |
 | Labeled parameter | Basic | Declared labels/default and live exact-label conditions. |
 | Automation | Basic | Piecewise-linear volume/pitch curves update active voices. No curved segments, modulation, or seek speed. |
 | 3D attributes | Basic | Position is applied to native voices; velocity/orientation are stored and validated but not yet consumed by s&box playback. |
-| Event editor | Basic | Dedicated s&box-styled timeline, whole-event preview, repeat/follow audition, direct track volume/pitch faders, transient mute/solo, movable instrument blocks, sound-file picker/drop workflows, waveform overlays, live parameter controls, curves, condition regions, embedded `.sndevt` inspector, undo/redo, and grouped save. It is intentionally not full FMOD parity. |
+| Event editor | Basic | Dedicated s&box-styled timeline, whole-event preview, repeat/follow audition, direct track volume/pitch faders, transient mute/solo, movable instrument blocks, sound-file picker/drop workflows, waveform overlays, live parameter controls, curves, condition regions, Audio Event root settings, separate embedded source/variation inspection, undo/redo, and grouped save. It is intentionally not full FMOD parity. |
 | Event callbacks | Missing | Add lifecycle, marker, beat, and programmer-sound callbacks when a real consumer exists. |
 | Timeline, markers, tempo | Partial | Real-time cursor, delayed starts, seek, pause, stable-ID destination/transition markers, conditional fixed-end or content-end loop regions, a constant tempo map, beat/bar quantization, deterministic priorities, bounded jump chains, and opt-in editor-only BPM detection for overlapping clips are supported. Detected BPM requires explicit author confirmation; meter remains authored. No sustain points, changing tempo/time signatures, or callback tracks. |
 | Async and programmer instruments | Missing | No asynchronous, command, silence, scatterer, or programmer instruments. |
@@ -51,9 +51,10 @@ Primary references:
 ## Authoring ownership boundary
 
 An `AudioInstrument` deliberately contains only a `.sndevt` reference, timeline
-placement, conditions, trim, and automations. `SoundEventResource` directly owns
-the playback properties and conditioned sound-file tracks. Runtime creates a
-native one-clip `SoundEvent` only after the Smod selector has chosen a track,
+placement, conditions, trim, and automations. `AudioEvent` owns the shared native
+playback settings, while `SoundEventResource` owns ranged volume/pitch, selection
+mode, and conditioned sound-file tracks. Runtime creates a native one-clip
+`SoundEvent` only after the Smod selector has chosen a track,
 so the native playlist can never compete with the authored `.sndevt` tracks.
 
 ## FMOD authoring workflow parity
