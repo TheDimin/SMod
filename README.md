@@ -2,9 +2,10 @@
 
 ValArk Audio is a deliberately small, FMOD-shaped event layer over s&box
 `SoundEvent` playback. An `AudioEvent` (`.audevt`) owns its timeline and
-instruments. Each instrument references a `SoundEventResource` (`.sndevt`),
-which owns playback properties and conditioned sound-file tracks with
-independent source offsets and playback lengths.
+instruments plus the shared UI, spatial, attenuation, falloff, loudness, and
+mixer settings used by every voice. Each instrument references a
+`SoundEventResource` (`.sndevt`), which owns ranged volume/pitch, source
+selection, and conditioned sound-file tracks with independent offsets and lengths.
 
 ## Runtime API
 
@@ -27,9 +28,9 @@ position and forwards parameter value changes while it plays.
 The naming follows FMOD Studio/API concepts: `AudioSystem`, event description,
 event instance, tracks, instruments, parameters, `Start`, `Stop`, and `Release`.
 It is not an FMOD binding; native playback remains s&box `SoundEvent` playback.
-Each `.sndevt` owns its only playable clip list plus ranged volume and pitch,
-attenuation, occlusion, reverb, and mixer properties. `AudioInstrument` does
-not duplicate those settings. Instruments can author fade-in and fade-out
+Each `.sndevt` owns its only playable clip list plus ranged volume, pitch, and
+selection mode. The owning `.audevt` supplies shared attenuation, occlusion,
+reverb, UI, loudness, falloff, and mixer properties. Instruments can author fade-in and fade-out
 durations with adjustable Bézier midpoint controls; overlapping faded
 instruments form a crossfade, and the
 fade envelope multiplies the existing track, automation, audition, and instance
@@ -71,9 +72,11 @@ when no eligible content can establish an earlier boundary.
 Double-click an `.audevt` to open the dedicated Audio Event Editor. It provides
 whole-event transport, seek and zoom controls, master and regular timeline
 tracks with direct volume/pitch faders, movable/trim-able instrument blocks, waveform overlays, live parameter
-controls, automation curves, condition regions, a context inspector, and an
-embedded `.sndevt` inspector. Drop a sound file onto a track to place an
-instrument at that time. `Ctrl+S` saves dirty `.audevt` and referenced
+controls, automation curves, condition regions, and a context inspector. Select
+the Audio Event root to edit shared playback settings. Instrument inspection keeps
+timeline properties separate; embedded sources use a dedicated source/variation
+selection and external `.sndevt` assets open in their own editor. Drop a sound file
+onto a track to place an instrument at that time. `Ctrl+S` saves dirty `.audevt` and referenced
 `.sndevt` resources together.
 
 Selected or hovered instruments show fade handles at the top of their start and
