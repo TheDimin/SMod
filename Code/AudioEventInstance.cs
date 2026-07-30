@@ -922,12 +922,13 @@ internal static class AudioEventEvaluator
 		if ( !Matches( audioEvent.MasterTrack.Conditions, parameters ) )
 			return requests;
 
-		EvaluateTrack( audioEvent.MasterTrack, 1f, 1f, parameters, requests, selectTrack );
+		EvaluateTrack( audioEvent, audioEvent.MasterTrack, 1f, 1f, parameters, requests, selectTrack );
 		foreach ( var track in audioEvent.Tracks )
 		{
 			if ( !Matches( track.Conditions, parameters ) )
 				continue;
 			EvaluateTrack(
+				audioEvent,
 				track,
 				audioEvent.MasterTrack.Volume,
 				audioEvent.MasterTrack.Pitch,
@@ -939,6 +940,7 @@ internal static class AudioEventEvaluator
 	}
 
 	private static void EvaluateTrack(
+		AudioEvent audioEvent,
 		AudioTrack track,
 		float parentVolume,
 		float parentPitch,
@@ -966,7 +968,7 @@ internal static class AudioEventEvaluator
 				track,
 				instrument,
 				soundTrack,
-				instrument.Sound.CreatePlaybackEvent( soundTrack ),
+				audioEvent.CreatePlaybackEvent( instrument.Sound, soundTrack ),
 				instrument.StartTime,
 				volume,
 				pitch ) );
