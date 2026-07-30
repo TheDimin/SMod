@@ -44,6 +44,8 @@ public static class AudioEventValidator
 			result.Error( $"{eventPath}/Parameters", "Parameter collection cannot be null." );
 		if ( !float.IsFinite( audioEvent.FadeOutDuration ) || audioEvent.FadeOutDuration < 0f )
 			result.Error( $"{eventPath}/FadeOutDuration", "Fade-out duration must be finite and non-negative." );
+		if ( !float.IsFinite( audioEvent.Distance ) || audioEvent.Distance < 0f )
+			result.Error( $"{eventPath}/Distance", "Audio event distance must be finite and non-negative." );
 		if ( audioEvent.TimelineSampleRate < 8000 || audioEvent.TimelineSampleRate > 192000 )
 			result.Error( $"{eventPath}/TimelineSampleRate", "Timeline sample rate must be between 8000 and 192000 Hz." );
 		if ( !float.IsFinite( audioEvent.TimelineDuration ) || audioEvent.TimelineDuration < 0f )
@@ -357,8 +359,6 @@ public static class AudioEventValidator
 		if ( !float.IsFinite( soundEvent.Pitch.Min ) || !float.IsFinite( soundEvent.Pitch.Max )
 			|| soundEvent.Pitch.Min <= 0f || soundEvent.Pitch.Max < soundEvent.Pitch.Min )
 			result.Error( $"{path}/Pitch", "Sound event pitch range must be finite, ordered, and greater than zero." );
-		if ( !float.IsFinite( soundEvent.Distance ) || soundEvent.Distance < 0f )
-			result.Error( $"{path}/Distance", "Sound event distance must be finite and non-negative." );
 		if ( soundEvent.Tracks is null || soundEvent.Tracks.Count == 0 )
 		{
 			result.Error( $"{path}/Tracks", "Sound event requires at least one track." );
