@@ -27,7 +27,15 @@
 	</ItemGroup>
 
 	<ItemGroup>
-		<Analyzer Include="$(SboxRoot)/bin/managed/Sandbox.CodeUpgrader.dll"/>`r`n		<Analyzer Include="$(SboxRoot)/bin/managed/Sandbox.Generator.dll"/>`r`n		<Reference Include="$(SboxRoot)/bin/managed/Sandbox.System.dll"/>`r`n		<Reference Include="$(SboxRoot)/bin/managed/Sandbox.Engine.dll"/>`r`n		<Reference Include="$(SboxRoot)/bin/managed/Sandbox.Filesystem.dll"/>`r`n		<Reference Include="$(SboxRoot)/bin/managed/Sandbox.Reflection.dll"/>`r`n		<Reference Include="$(SboxRoot)/bin/managed/Sandbox.Mounting.dll"/>`r`n		<Reference Include="$(SboxRoot)/bin/managed/Microsoft.AspNetCore.Components.dll"/>`r`n	</ItemGroup>
+		<Analyzer Include="$(SboxRoot)/bin/managed/Sandbox.CodeUpgrader.dll"/>
+		<Analyzer Include="$(SboxRoot)/bin/managed/Sandbox.Generator.dll"/>
+		<Reference Include="$(SboxRoot)/bin/managed/Sandbox.System.dll"/>
+		<Reference Include="$(SboxRoot)/bin/managed/Sandbox.Engine.dll"/>
+		<Reference Include="$(SboxRoot)/bin/managed/Sandbox.Filesystem.dll"/>
+		<Reference Include="$(SboxRoot)/bin/managed/Sandbox.Reflection.dll"/>
+		<Reference Include="$(SboxRoot)/bin/managed/Sandbox.Mounting.dll"/>
+		<Reference Include="$(SboxRoot)/bin/managed/Microsoft.AspNetCore.Components.dll"/>
+	</ItemGroup>
 
 	<ItemGroup>
 		<ProjectReference Include="$(SboxRoot)/addons/base/code/Base Library.csproj" />
