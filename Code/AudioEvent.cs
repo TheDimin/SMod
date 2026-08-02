@@ -148,7 +148,7 @@ public sealed class AudioInstrument
 	public List<AudioAutomation> Automations { get; set; } = new();
 }
 
-[AssetType( Name = "ValArk Sound Event", Extension = "sndevt", Category = "Audio", Flags = AssetTypeFlags.NoEmbedding )]
+[AssetType( Name = "Sound Event", Extension = "sndevt", Category = "Audio", Flags = AssetTypeFlags.NoEmbedding )]
 public sealed class SoundEventResource : GameResource
 {
 	[Property]
