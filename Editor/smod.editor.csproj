@@ -1,0 +1,56 @@
+<Project Sdk="Microsoft.NET.Sdk.Razor">
+
+	<PropertyGroup>
+		<SboxRoot Condition="'$(SboxRoot)' == ''">$(FACEPUNCH_ENGINE)</SboxRoot>
+		<TargetFramework>net10.0</TargetFramework>
+		<GenerateDocumentationFile>true</GenerateDocumentationFile>
+		<AssemblyName>smod.editor</AssemblyName>
+		<PackageId>smod.editor</PackageId>
+		<LangVersion>14</LangVersion>
+		<NoWarn>1701;1702;1591;</NoWarn>
+		<WarningsAsErrors></WarningsAsErrors>
+		<TreatWarningsAsErrors>False</TreatWarningsAsErrors>
+		<AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+		<DefineConstants>SANDBOX</DefineConstants>
+		<AllowUnsafeBlocks>True</AllowUnsafeBlocks>
+		<OutputPath>$(SboxRoot)/.vs/output/</OutputPath>
+		<DocumentationFile>$(SboxRoot)/.vs/output/smod.editor.xml</DocumentationFile>
+		<RootNamespace>Smod.Editor</RootNamespace>
+		<Nullable>disable</Nullable>
+	</PropertyGroup>
+
+	<ItemGroup>
+		<Using Include="Sandbox.Internal.GlobalToolsNamespace" Static="true" />
+		<Using Include="Sandbox.Internal.GlobalGameNamespace" Static="true" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<Analyzer Include="$(SboxRoot)/bin/managed/Sandbox.CodeUpgrader.dll"/>
+		<Analyzer Include="$(SboxRoot)/bin/managed/Sandbox.Generator.dll"/>
+		<Reference Include="$(SboxRoot)/bin/managed/Sandbox.System.dll"/>
+		<Reference Include="$(SboxRoot)/bin/managed/Sandbox.Engine.dll"/>
+		<Reference Include="$(SboxRoot)/bin/managed/Sandbox.Filesystem.dll"/>
+		<Reference Include="$(SboxRoot)/bin/managed/Sandbox.Reflection.dll"/>
+		<Reference Include="$(SboxRoot)/bin/managed/Sandbox.Mounting.dll"/>
+		<Reference Include="$(SboxRoot)/bin/managed/Microsoft.AspNetCore.Components.dll"/>
+		<Reference Include="$(SboxRoot)/bin/managed/Sandbox.AppSystem.dll"/>
+		<Reference Include="$(SboxRoot)/bin/managed/Sandbox.Tools.dll"/>
+		<Reference Include="$(SboxRoot)/bin/managed/Sandbox.Compiling.dll"/>
+		<Reference Include="$(SboxRoot)/bin/managed/Microsoft.CodeAnalysis.dll"/>
+		<Reference Include="$(SboxRoot)/bin/managed/Microsoft.CodeAnalysis.CSharp.dll"/>
+		<Reference Include="$(SboxRoot)/bin/managed/Sandbox.Bind.dll"/>
+		<Reference Include="$(SboxRoot)/bin/managed/Facepunch.ActionGraphs.dll"/>
+		<Reference Include="$(SboxRoot)/bin/managed/SkiaSharp.dll"/>
+	</ItemGroup>
+
+	<ItemGroup>
+		<ProjectReference Include="$(SboxRoot)/editor/ActionGraph/Code/actiongraph.csproj" />
+		<ProjectReference Include="$(SboxRoot)/editor/DooEditor/Code/dooeditor.csproj" />
+		<ProjectReference Include="$(SboxRoot)/editor/Hammer/Code/hammer.csproj" />
+		<ProjectReference Include="$(SboxRoot)/addons/tools/code/Base Editor Library.csproj" />
+		<ProjectReference Include="$(SboxRoot)/editor/MovieMaker/Code/moviemaker.csproj" />
+		<ProjectReference Include="../Code/smod.csproj" />
+		<ProjectReference Include="$(SboxRoot)/editor/ShaderGraph/Code/shadergraph.csproj" />
+	</ItemGroup>
+
+</Project>
