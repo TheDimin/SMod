@@ -8,7 +8,8 @@ namespace Editor;
 internal enum AudioPreviewSource
 {
 	ProjectSoundFile,
-	CloudSound
+	CloudSound,
+	ExternalFile
 }
 
 internal enum AudioPreviewStatus
@@ -154,6 +155,23 @@ internal sealed class AudioPreviewPlaybackService
 				cancellation.Dispose();
 			}
 		}
+	}
+
+	public Task ToggleAsync(
+		object owner,
+		AudioPreviewSource source,
+		string itemId,
+		string displayName,
+		Func<CancellationToken, Task<SoundFile>> loadSound,
+		Action stopTimeline )
+	{
+		if ( IsActive( source, itemId ) )
+		{
+			Stop();
+			return Task.CompletedTask;
+		}
+
+		return PlayAsync( owner, source, itemId, displayName, loadSound, stopTimeline );
 	}
 
 	public bool IsActive( AudioPreviewSource source, string itemId )
