@@ -120,25 +120,25 @@ public sealed class AudioInstrument
 	[Property, Title( "Sound Event" )]
 	public SoundEventResource Sound { get; set; }
 
-	[Property, Range( 0f, 300f ), Title( "Start Time" ), Description( "Timeline start time in seconds." )]
+	[Property, Group( "Debug" ), Order( 1000 ), Range( 0f, 300f ), Title( "Start Time" ), Description( "Timeline start time in seconds." )]
 	public float StartTime { get; set; }
 
-	[Property, Range( 0f, 300f ), Title( "Trim Start" ), Description( "Source time in seconds where playback begins." )]
+	[Property, Group( "Debug" ), Order( 1000 ), Range( 0f, 300f ), Title( "Trim Start" ), Description( "Source time in seconds where playback begins." )]
 	public float TrimStart { get; set; }
 
-	[Property, Range( 0f, 300f ), Title( "Trim End" ), Description( "Source time in seconds where playback stops. Zero uses the end of the selected sound." )]
+	[Property, Group( "Debug" ), Order( 1000 ), Range( 0f, 300f ), Title( "Trim End" ), Description( "Source time in seconds where playback stops. Zero uses the end of the selected sound." )]
 	public float TrimEnd { get; set; }
 
-	[Property, Range( 0f, 300f ), Title( "Fade In" ), Description( "Seconds used to fade the instrument from silence to its authored volume." )]
+	[Property, Group( "Debug" ), Order( 1000 ), Range( 0f, 300f ), Title( "Fade In" ), Description( "Seconds used to fade the instrument from silence to its authored volume." )]
 	public float FadeInDuration { get; set; }
 
-	[Property, Range( 0f, 1f ), Title( "Fade In Curve" ), Description( "Normalized gain of the fade-in curve's middle control point." )]
+	[Property, Group( "Debug" ), Order( 1000 ), Range( 0f, 1f ), Title( "Fade In Curve" ), Description( "Normalized gain of the fade-in curve's middle control point." )]
 	public float FadeInCurveMidpoint { get; set; } = 0.5f;
 
-	[Property, Range( 0f, 300f ), Title( "Fade Out" ), Description( "Seconds used to fade the instrument from its authored volume to silence." )]
+	[Property, Group( "Debug" ), Order( 1000 ), Range( 0f, 300f ), Title( "Fade Out" ), Description( "Seconds used to fade the instrument from its authored volume to silence." )]
 	public float FadeOutDuration { get; set; }
 
-	[Property, Range( 0f, 1f ), Title( "Fade Out Curve" ), Description( "Normalized gain of the fade-out curve's middle control point." )]
+	[Property, Group( "Debug" ), Order( 1000 ), Range( 0f, 1f ), Title( "Fade Out Curve" ), Description( "Normalized gain of the fade-out curve's middle control point." )]
 	public float FadeOutCurveMidpoint { get; set; } = 0.5f;
 
 	[Property, InlineEditor]
