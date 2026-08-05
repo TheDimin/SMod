@@ -543,6 +543,19 @@ public sealed class AudioEventEditorWindow : DockWindow, IAssetEditor, AssetSyst
 		AddInstrument( ResolveLibraryInsertionTrack(), sound, PreviewPosition );
 	}
 
+	internal async Task AddExternalSoundFromLibraryAsync( string sourcePath )
+	{
+		try
+		{
+			var asset = await ExternalAudioSourceCatalog.ImportAsync( sourcePath );
+			AddSoundFromLibrary( asset );
+		}
+		catch ( Exception exception )
+		{
+			Log.Warning( exception, $"Could not import external sound '{sourcePath}'." );
+		}
+	}
+
 	internal void OpenClipSlicer( Asset asset )
 	{
 		if ( asset?.AssetType != AssetType.SoundFile || _event is null )
@@ -615,20 +628,16 @@ public sealed class AudioEventEditorWindow : DockWindow, IAssetEditor, AssetSyst
 		var validSounds = sounds.Where( sound => sound.IsValid() ).ToArray();
 		if ( validSounds.Length == 0 )
 			return;
-		ExecuteResourceAction( validSounds.Length == 1 ? "Add Audio Instrument" : "Add Audio Instruments", _event, () =>
+		ExecuteResourceAction( validSounds.Length == 1 ? "Add Audio Instrument" : "Add Audio Multi-Instrument", _event, () =>
 		{
 			track.Instruments ??= new();
-			foreach ( var sound in validSounds )
+			track.Instruments.Add( new AudioInstrument
 			{
-				track.Instruments.Add( new AudioInstrument
-				{
-					Sound = CreateEmbeddedSoundEvent( sound ),
-					StartTime = MathF.Max( 0f, startTime ).SnapToGrid( 0.01f )
-				} );
-			}
+				Sound = CreateEmbeddedSoundEvent( validSounds ),
+				StartTime = MathF.Max( 0f, startTime ).SnapToGrid( 0.01f )
+			} );
 		} );
 	}
-
 	internal void AddSoundsToInstrument( AudioInstrument instrument, IReadOnlyList<SoundFile> sounds )
 	{
 		if ( instrument?.Sound is null || sounds is null || !EnumerateInstruments().Contains( instrument ) )
@@ -646,17 +655,11 @@ public sealed class AudioEventEditorWindow : DockWindow, IAssetEditor, AssetSyst
 		} );
 	}
 
-	private static SoundEventResource CreateEmbeddedSoundEvent( SoundFile sound )
+	internal static SoundEventResource CreateEmbeddedSoundEvent( IReadOnlyList<SoundFile> sounds )
 	{
-		var soundEvent = new SoundEventResource
-		{
-			Tracks = new List<SoundEventTrack> { new() { Sound = sound } }
-		};
-		soundEvent.EmbeddedResource = new Sandbox.Resources.EmbeddedResource { ResourceCompiler = "embed" };
-		return soundEvent;
+		return AudioSoundEventFactory.CreateEmbedded( sounds );
 	}
-
-	internal void RemoveInstrument( AudioTrack track, AudioInstrument instrument )
+internal void RemoveInstrument( AudioTrack track, AudioInstrument instrument )
 	{
 		if ( track is null || instrument is null || track.Instruments is null || !track.Instruments.Contains( instrument ) )
 			return;
@@ -1488,7 +1491,7 @@ internal sealed class AudioSoundLibraryWidget : Widget, AssetSystem.IEventListen
 	private readonly SearchWidget _search;
 	private readonly Label _count;
 	private readonly AudioSoundLibraryList _list;
-	private Asset[] _assets = Array.Empty<Asset>();
+	private AudioLibraryItem[] _items = [];
 
 	public AudioSoundLibraryWidget( AudioEventEditorWindow window ) : base( window )
 	{
@@ -1504,14 +1507,14 @@ internal sealed class AudioSoundLibraryWidget : Widget, AssetSystem.IEventListen
 		header.Add( new Label( "Sound Files" ), 1 );
 		_count = header.Add( new Label { Alignment = TextFlag.RightCenter } );
 		var refresh = header.Add( new ToolButton( string.Empty, "refresh", this ) );
-		refresh.ToolTip = "Refresh project and sandbox default sounds";
+		refresh.ToolTip = $"Refresh project sounds and {ExternalAudioSourceCatalog.SourceRoot}";
 		refresh.MouseLeftPress = RefreshAssets;
 
 		_search = Layout.Add( new SearchWidget( this, false ) );
-		_search.PlaceholderText = "Search sound files";
+		_search.PlaceholderText = "Search project and external sounds";
 		_search.ValueChanged += ApplySearch;
 
-		var hint = Layout.Add( new Label( "Drag onto a track or double-click to add at the playhead." ) );
+		var hint = Layout.Add( new Label( "Ctrl/Shift-select sounds, then drag to create one multi-instrument. Double-click adds at the playhead." ) );
 		hint.WordWrap = true;
 		hint.MaximumHeight = 38f;
 
@@ -1519,41 +1522,37 @@ internal sealed class AudioSoundLibraryWidget : Widget, AssetSystem.IEventListen
 		RefreshAssets();
 	}
 
-
 	private void RefreshAssets()
 	{
-		_assets = AssetSystem.All
+		var project = AssetSystem.All
 			.Where( asset => asset?.AssetType == AssetType.SoundFile )
-			.OrderBy( asset => asset.Path, StringComparer.OrdinalIgnoreCase )
+			.Select( AudioLibraryItem.FromAsset );
+		var external = ExternalAudioSourceCatalog.Scan().Select( AudioLibraryItem.FromExternal );
+		_items = project.Concat( external )
+			.OrderBy( item => item.RelativePath, StringComparer.OrdinalIgnoreCase )
 			.ToArray();
 		ApplySearch();
 	}
 
-
 	private void ApplySearch()
 	{
 		var query = _search.Value?.Trim() ?? string.Empty;
-		var matches = _assets
-			.Select( asset => (Asset: asset, Score: ScoreAsset( asset, query )) )
+		var matches = _items
+			.Select( item => (Item: item, Score: ScoreItem( item, query )) )
 			.Where( match => match.Score >= 0 )
 			.OrderByDescending( match => match.Score )
-			.ThenBy( match => match.Asset.Path, StringComparer.OrdinalIgnoreCase )
-			.Select( match => match.Asset )
+			.ThenBy( match => match.Item.RelativePath, StringComparer.OrdinalIgnoreCase )
+			.Select( match => match.Item )
 			.ToArray();
-		_count.Text = string.IsNullOrWhiteSpace( query )
-			? _assets.Length.ToString()
-			: $"{matches.Length}/{_assets.Length}";
+		_count.Text = string.IsNullOrWhiteSpace( query ) ? _items.Length.ToString() : $"{matches.Length}/{_items.Length}";
 		_list.SetSounds( matches );
 	}
 
-
-	private static int ScoreAsset( Asset asset, string query )
+	private static int ScoreItem( AudioLibraryItem item, string query )
 	{
-		if ( string.IsNullOrWhiteSpace( query ) )
-			return 0;
-
-		var fields = new[] { asset.Name, asset.RelativePath }
-			.Concat( asset.Tags.GetAll() )
+		if ( string.IsNullOrWhiteSpace( query ) ) return 0;
+		var fields = new[] { item.Name, item.RelativePath, item.Source == AudioLibrarySource.External ? "external" : "project" }
+			.Concat( item.Asset?.Tags.GetAll() ?? [] )
 			.Where( value => !string.IsNullOrWhiteSpace( value ) )
 			.ToArray();
 		return ScoreFields( fields, query );
@@ -1565,8 +1564,7 @@ internal sealed class AudioSoundLibraryWidget : Widget, AssetSystem.IEventListen
 		foreach ( var token in query.Split( ' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries ) )
 		{
 			var best = fields.Select( field => FuzzyScore( field, token ) ).DefaultIfEmpty( -1 ).Max();
-			if ( best < 0 )
-				return -1;
+			if ( best < 0 ) return -1;
 			total += best;
 		}
 		return total;
@@ -1574,9 +1572,7 @@ internal sealed class AudioSoundLibraryWidget : Widget, AssetSystem.IEventListen
 
 	private static int FuzzyScore( string candidate, string query )
 	{
-		if ( string.IsNullOrEmpty( query ) )
-			return 0;
-
+		if ( string.IsNullOrEmpty( query ) ) return 0;
 		var exactIndex = candidate.IndexOf( query, StringComparison.OrdinalIgnoreCase );
 		if ( exactIndex >= 0 )
 		{
@@ -1589,53 +1585,33 @@ internal sealed class AudioSoundLibraryWidget : Widget, AssetSystem.IEventListen
 		var previousMatch = -2;
 		foreach ( var queryCharacter in query )
 		{
-			while ( candidateIndex < candidate.Length && char.ToUpperInvariant( candidate[candidateIndex] ) != char.ToUpperInvariant( queryCharacter ) )
-				candidateIndex++;
-			if ( candidateIndex >= candidate.Length )
-				return -1;
-
+			while ( candidateIndex < candidate.Length && char.ToUpperInvariant( candidate[candidateIndex] ) != char.ToUpperInvariant( queryCharacter ) ) candidateIndex++;
+			if ( candidateIndex >= candidate.Length ) return -1;
 			var wordStart = candidateIndex == 0 || !char.IsLetterOrDigit( candidate[candidateIndex - 1] );
 			score += candidateIndex == previousMatch + 1 ? 24 : 8;
-			if ( wordStart )
-				score += 18;
-			previousMatch = candidateIndex;
-			candidateIndex++;
+			if ( wordStart ) score += 18;
+			previousMatch = candidateIndex++;
 		}
-
 		return score - candidate.Length - (candidateIndex - query.Length) * 2;
 	}
 
-	private void AddSound( Asset asset )
+	private async void AddSound( AudioLibraryItem item )
 	{
-		_window.AddSoundFromLibrary( asset );
+		if ( item.Source == AudioLibrarySource.Project )
+			_window.AddSoundFromLibrary( item.Asset );
+		else
+			await _window.AddExternalSoundFromLibraryAsync( item.ExternalPath );
 	}
 
-	private void SliceSound( Asset asset )
+	private void SliceSound( AudioLibraryItem item ) => _window.OpenClipSlicer( item.Asset );
+	private void OpenSound( AudioLibraryItem item ) => item.Asset?.OpenInEditor();
+	private void InspectSound( AudioLibraryItem item )
 	{
-		_window.OpenClipSlicer( asset );
+		if ( item.Asset is not null ) EditorUtility.InspectorObject = item.Asset;
 	}
 
-	private void OpenSound( Asset asset )
-	{
-		asset?.OpenInEditor();
-	}
-
-	private void InspectSound( Asset asset )
-	{
-		if ( asset is not null )
-			EditorUtility.InspectorObject = asset;
-	}
-
-	void AssetSystem.IEventListener.OnAssetSystemChanges()
-	{
-		RefreshAssets();
-	}
-
-	void AssetSystem.IEventListener.OnAssetTagsChanged()
-	{
-		RefreshAssets();
-	}
-
+	void AssetSystem.IEventListener.OnAssetSystemChanges() => RefreshAssets();
+	void AssetSystem.IEventListener.OnAssetTagsChanged() => RefreshAssets();
 
 	protected override void OnPaint()
 	{
@@ -1647,19 +1623,14 @@ internal sealed class AudioSoundLibraryWidget : Widget, AssetSystem.IEventListen
 
 internal sealed class AudioSoundLibraryList : ListView
 {
-	private readonly Action<Asset> _addSound;
-	private readonly Action<Asset> _sliceSound;
-	private readonly Action<Asset> _openSound;
-	private readonly Action<Asset> _inspectSound;
+	private readonly Action<AudioLibraryItem> _addSound;
+	private readonly Action<AudioLibraryItem> _sliceSound;
+	private readonly Action<AudioLibraryItem> _openSound;
+	private readonly Action<AudioLibraryItem> _inspectSound;
 	private readonly AudioEventEditorWindow _window;
 	private readonly AudioPreviewPlaybackService _preview = AudioPreviewPlaybackService.Instance;
 
-	public AudioSoundLibraryList( Widget parent, AudioEventEditorWindow window, Action<Asset> addSound, Action<Asset> openSound, Action<Asset> inspectSound )
-		: this( parent, window, addSound, IgnoreSlice, openSound, inspectSound )
-	{
-	}
-
-	public AudioSoundLibraryList( Widget parent, AudioEventEditorWindow window, Action<Asset> addSound, Action<Asset> sliceSound, Action<Asset> openSound, Action<Asset> inspectSound ) : base( parent )
+	public AudioSoundLibraryList( Widget parent, AudioEventEditorWindow window, Action<AudioLibraryItem> addSound, Action<AudioLibraryItem> sliceSound, Action<AudioLibraryItem> openSound, Action<AudioLibraryItem> inspectSound ) : base( parent )
 	{
 		_window = window;
 		_addSound = addSound;
@@ -1669,128 +1640,131 @@ internal sealed class AudioSoundLibraryList : ListView
 		_preview.StateChanged += OnPreviewStateChanged;
 		ItemSize = new Vector2( 0f, 46f );
 		ItemSpacing = 2f;
-		MultiSelect = false;
+		MultiSelect = true;
 		FocusMode = FocusMode.TabOrClick;
 		ItemClicked = HandleItemClicked;
 		ItemActivated = HandleItemActivated;
 		ItemContextMenu = ShowContextMenu;
 	}
 
-	private static void IgnoreSlice( Asset asset )
+	private void HandleItemClicked( object value )
 	{
+		if ( value is AudioLibraryItem item ) _ = TogglePreviewAsync( item );
 	}
 
-	private void HandleItemClicked( object item )
+	private void HandleItemActivated( object value )
 	{
-		if ( item is Asset asset )
-			_ = RestartPreviewAsync( asset );
+		if ( value is not AudioLibraryItem item ) return;
+		_ = RestartPreviewAsync( item );
+		_addSound( item );
 	}
 
-	private void HandleItemActivated( object item )
-	{
-		if ( item is not Asset asset )
-			return;
-		_ = RestartPreviewAsync( asset );
-		_addSound( asset );
-	}
+	public void SetSounds( IReadOnlyList<AudioLibraryItem> items ) => SetItems( items.Cast<object>() );
 
-	public void SetSounds( IReadOnlyList<Asset> assets )
+	private Task TogglePreviewAsync( AudioLibraryItem item )
 	{
-		SetItems( assets.Cast<object>() );
-	}
+		if ( item.Source == AudioLibrarySource.External )
+		{
+			return _preview.ToggleAsync(
+				_window, AudioPreviewSource.ExternalFile, item.Id, item.Name,
+				token => ExternalAudioSourceCatalog.LoadPreviewAsync( item.ExternalPath, token ),
+				_window.StopTimelineForFilePreview );
+		}
 
-	private Task RestartPreviewAsync( Asset asset )
-	{
-		if ( asset?.AssetType != AssetType.SoundFile )
-			return Task.CompletedTask;
-
-		return _preview.PlayAsync(
-			_window,
-			AudioPreviewSource.ProjectSoundFile,
-			asset.Path,
-			asset.Name,
-			_ => Task.FromResult( SoundFile.Load( asset.Path ) ),
+		return _preview.ToggleAsync(
+			_window, AudioPreviewSource.ProjectSoundFile, item.Id, item.Name,
+			_ => Task.FromResult( SoundFile.Load( item.Asset.Path ) ),
 			_window.StopTimelineForFilePreview );
 	}
 
-	private void OnPreviewStateChanged( AudioPreviewState state )
+	private Task RestartPreviewAsync( AudioLibraryItem item )
 	{
-		Update();
+		if ( item.Source == AudioLibrarySource.External )
+		{
+			return _preview.PlayAsync(
+				_window, AudioPreviewSource.ExternalFile, item.Id, item.Name,
+				token => ExternalAudioSourceCatalog.LoadPreviewAsync( item.ExternalPath, token ),
+				_window.StopTimelineForFilePreview );
+		}
+
+		return _preview.PlayAsync(
+			_window, AudioPreviewSource.ProjectSoundFile, item.Id, item.Name,
+			_ => Task.FromResult( SoundFile.Load( item.Asset.Path ) ),
+			_window.StopTimelineForFilePreview );
 	}
 
-	protected override bool OnDragItem( VirtualWidget item )
-	{
-		if ( item.Object is not Asset asset )
-			return false;
+	private void OnPreviewStateChanged( AudioPreviewState state ) => Update();
 
+	protected override bool OnDragItem( VirtualWidget widget )
+	{
+		if ( widget.Object is not AudioLibraryItem item ) return false;
+		var items = SelectedItems.OfType<AudioLibraryItem>().ToArray();
+		if ( !items.Contains( item ) ) items = new[] { item };
 		var drag = new Drag( this );
-		drag.Data.Text = asset.RelativePath;
-		drag.Data.Url = new Uri( "file:///" + asset.AbsolutePath );
+		drag.Data.Object = new AudioLibraryDragData( libraryItems: items );
+		drag.Data.Text = items.Length == 1
+			? item.Source == AudioLibrarySource.External ? item.ExternalPath : item.Asset.RelativePath
+			: $"{items.Length} sound files";
 		drag.Execute();
 		return true;
 	}
-
-	private void ShowContextMenu( object item )
+	private void ShowContextMenu( object value )
 	{
-		if ( item is not Asset asset )
-			return;
-
+		if ( value is not AudioLibraryItem item ) return;
 		var menu = new ContextMenu( this );
-		menu.AddHeading( asset.Name );
-		menu.AddOption( "Add at Playhead", "add", () => _addSound( asset ) );
-		menu.AddOption( "Slice into Multi-Instrument...", "content_cut", () => _sliceSound( asset ) );
+		menu.AddHeading( item.Name );
+		menu.AddOption( "Add at Playhead", "add", () => _addSound( item ) );
+		if ( item.Source == AudioLibrarySource.Project )
+		{
+			menu.AddOption( "Slice into Multi-Instrument...", "content_cut", () => _sliceSound( item ) );
+			menu.AddSeparator();
+			menu.AddOption( "Open Sound", "open_in_new", () => _openSound( item ) );
+			menu.AddOption( "Inspect Sound", "manage_search", () => _inspectSound( item ) );
+			menu.AddOption( "Show in Asset Browser", "folder_open", () => MainAssetBrowser.Instance?.Local.FocusOnAsset( item.Asset ) );
+		}
 		menu.AddSeparator();
-		menu.AddOption( "Open Sound", "open_in_new", () => _openSound( asset ) );
-		menu.AddOption( "Inspect Sound", "manage_search", () => _inspectSound( asset ) );
-		menu.AddOption( "Show in Asset Browser", "folder_open", () => MainAssetBrowser.Instance?.Local.FocusOnAsset( asset ) );
-		menu.AddSeparator();
-		if ( _preview.IsActive( AudioPreviewSource.ProjectSoundFile, asset.Path ) )
+		var previewSource = item.Source == AudioLibrarySource.External ? AudioPreviewSource.ExternalFile : AudioPreviewSource.ProjectSoundFile;
+		if ( _preview.IsActive( previewSource, item.Id ) )
 			menu.AddOption( "Stop Preview", "stop", _preview.Stop );
 		else
-			menu.AddOption( "Preview", "play_arrow", () => _ = RestartPreviewAsync( asset ) );
+			menu.AddOption( "Preview", "play_arrow", () => _ = RestartPreviewAsync( item ) );
 		menu.OpenAtCursor();
 	}
 
-	protected override void PaintItem( VirtualWidget item )
+	protected override void PaintItem( VirtualWidget widget )
 	{
-		if ( item.Object is not Asset asset )
-			return;
-
+		if ( widget.Object is not AudioLibraryItem item ) return;
 		if ( Paint.HasSelected || Paint.HasPressed || Paint.HasMouseOver )
 		{
 			Paint.ClearPen();
 			Paint.SetBrush( (Paint.HasSelected || Paint.HasPressed ? Theme.Primary : Theme.SurfaceLightBackground).WithAlpha( 0.35f ) );
-			Paint.DrawRect( item.Rect.Shrink( 1f ), 3f );
+			Paint.DrawRect( widget.Rect.Shrink( 1f ), 3f );
 		}
 
-		var previewState = _preview.IsCurrentItem( AudioPreviewSource.ProjectSoundFile, asset.Path )
-			? _preview.State
-			: AudioPreviewState.Idle;
-		var iconRect = item.Rect.Shrink( 6f );
+		var previewSource = item.Source == AudioLibrarySource.External ? AudioPreviewSource.ExternalFile : AudioPreviewSource.ProjectSoundFile;
+		var previewState = _preview.IsCurrentItem( previewSource, item.Id ) ? _preview.State : AudioPreviewState.Idle;
+		var iconRect = widget.Rect.Shrink( 6f );
 		iconRect.Width = 22f;
-		Paint.SetPen( previewState.Status == AudioPreviewStatus.Error ? Theme.Red : Theme.Blue );
-		Paint.DrawIcon(
-			iconRect,
-			previewState.Status is AudioPreviewStatus.Loading or AudioPreviewStatus.Playing ? "stop_circle" : "audio_file",
-			19f,
-			TextFlag.Center );
+		Paint.SetPen( previewState.Status == AudioPreviewStatus.Error ? Theme.Red : item.Source == AudioLibrarySource.External ? Theme.Green : Theme.Blue );
+		Paint.DrawIcon( iconRect, previewState.Status is AudioPreviewStatus.Loading or AudioPreviewStatus.Playing ? "stop_circle" : "audio_file", 19f, TextFlag.Center );
 
-		var textRect = item.Rect.Shrink( 34f, 4f, 5f, 4f );
+		var textRect = widget.Rect.Shrink( 34f, 4f, 5f, 4f );
 		Paint.SetDefaultFont( 8f, 500 );
 		Paint.SetPen( Theme.Text );
-		Paint.DrawText( textRect, Paint.GetElidedText( asset.Name, textRect.Width, ElideMode.Right ), TextFlag.LeftTop | TextFlag.SingleLine );
+		Paint.DrawText( textRect, Paint.GetElidedText( item.Name, textRect.Width, ElideMode.Right ), TextFlag.LeftTop | TextFlag.SingleLine );
 
-		var detail = previewState.Status == AudioPreviewStatus.Idle ? SoundFolderLabel( asset ) : previewState.Message;
+		var detail = previewState.Status == AudioPreviewStatus.Idle ? SoundFolderLabel( item ) : previewState.Message;
 		textRect.Top += 20f;
 		Paint.SetDefaultFont( 7f );
 		Paint.SetPen( previewState.Status == AudioPreviewStatus.Error ? Theme.Red : Theme.Text.WithAlpha( 0.55f ) );
 		Paint.DrawText( textRect, Paint.GetElidedText( detail, textRect.Width, ElideMode.Middle ), TextFlag.LeftTop | TextFlag.SingleLine );
 	}
 
-	private static string SoundFolderLabel( Asset asset )
+	private static string SoundFolderLabel( AudioLibraryItem item )
 	{
-		var folder = Path.GetDirectoryName( asset.RelativePath )?.Replace( '\\', '/' );
-		return string.IsNullOrWhiteSpace( folder ) ? "Project root" : folder;
+		var folder = Path.GetDirectoryName( item.RelativePath )?.Replace( '\\', '/' );
+		var location = string.IsNullOrWhiteSpace( folder ) ? "root" : folder;
+		return item.Source == AudioLibrarySource.External ? $"External � {location}" : $"Project � {location}";
 	}
 
 	public override void OnDestroyed()
@@ -1800,7 +1774,6 @@ internal sealed class AudioSoundLibraryList : ListView
 		base.OnDestroyed();
 	}
 }
-
 internal readonly record struct AudioTimelineTrackLayout( AudioTrack Track, bool IsMaster, int Index, float Top, float Height )
 {
 	public float Bottom => Top + Height;
@@ -2899,7 +2872,9 @@ internal sealed class AudioTimelineView : GraphicsView
 
 	public override void OnDragHover( DragEvent ev )
 	{
-		var acceptsSound = ev.Data.Assets.Any( drag =>
+		var payload = ev.Data.OfType<AudioLibraryDragData>().FirstOrDefault();
+		var acceptsExternal = payload?.LibraryItems.Any( item => item.Source == AudioLibrarySource.External && ExternalAudioSourceCatalog.IsWithinSourceRoot( item.ExternalPath ) ) == true;
+		var acceptsSound = payload?.HasItems == true || acceptsExternal || ev.Data.Assets.Any( drag =>
 			drag.PackageIdent is not null
 			|| AssetSystem.FindByPath( drag.AssetPath )?.AssetType == AssetType.SoundFile );
 		ev.Action = acceptsSound ? DropAction.Copy : DropAction.Ignore;
@@ -2907,13 +2882,13 @@ internal sealed class AudioTimelineView : GraphicsView
 
 	public override void OnDragDrop( DragEvent ev )
 	{
-		if ( ev.Data.Assets.Count == 0 )
+		var payload = ev.Data.OfType<AudioLibraryDragData>().FirstOrDefault();
+		if ( ev.Data.Assets.Count == 0 && payload?.HasItems != true )
 			return;
 		ev.Action = DropAction.Copy;
-		_ = AddDroppedSoundsAsync( ev.Data.Assets, ToScene( ev.LocalPosition ) );
+		_ = AddDroppedSoundsAsync( ev.Data.Assets, payload, ToScene( ev.LocalPosition ) );
 	}
-
-	private async Task AddDroppedSoundsAsync( IReadOnlyList<DragAssetData> draggedAssets, Vector2 scenePosition )
+	private async Task AddDroppedSoundsAsync( IReadOnlyList<DragAssetData> draggedAssets, AudioLibraryDragData payload, Vector2 scenePosition )
 	{
 		var trackIndex = TrackIndexFromPosition( scenePosition.y );
 		if ( scenePosition.y < RulerHeight || _trackLayouts.Count == 0 || scenePosition.y >= _trackLayouts[^1].Bottom || trackIndex < 0 || trackIndex >= _trackLayouts.Count )
@@ -2924,14 +2899,35 @@ internal sealed class AudioTimelineView : GraphicsView
 		var startTime = TimeFromPosition( scenePosition.x );
 		var sounds = new List<SoundFile>();
 
+		foreach ( var item in payload?.LibraryItems ?? Array.Empty<AudioLibraryItem>() )
+		{
+			try
+			{
+				var asset = item.Source == AudioLibrarySource.External
+					? await ExternalAudioSourceCatalog.ImportAsync( item.ExternalPath )
+					: item.Asset;
+				var sound = SoundFile.Load( asset.Path );
+				if ( sound.IsValid() ) sounds.Add( sound );
+			}
+			catch ( Exception exception ) { Log.Warning( exception, $"Could not import sound '{item.Name}'." ); }
+		}
+
+		foreach ( var package in payload?.CloudPackages ?? Array.Empty<Package>() )
+		{
+			try
+			{
+				var asset = await AudioCloudSoundCatalog.InstallAsync( package.FullIdent );
+				var sound = SoundFile.Load( asset.Path );
+				if ( sound.IsValid() ) sounds.Add( sound );
+			}
+			catch ( Exception exception ) { Log.Warning( exception, $"Could not install cloud sound '{package.FullIdent}'." ); }
+		}
 		foreach ( var dragged in draggedAssets )
 		{
 			Asset asset;
 			try
 			{
-				asset = dragged.PackageIdent is not null
-					? await AudioCloudSoundCatalog.ImportAsync( dragged.PackageIdent )
-					: await dragged.GetAssetAsync();
+				asset = await dragged.GetAssetAsync();
 			}
 			catch ( Exception exception )
 			{
