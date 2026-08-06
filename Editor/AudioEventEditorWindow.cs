@@ -349,19 +349,24 @@ public sealed class AudioEventEditorWindow : DockWindow, IAssetEditor, AssetSyst
 	{
 		if ( _preview?.IsValid ?? false )
 		{
+			var instrumentStates = _preview.InstrumentPlaybackStates;
 			_workspace.TimelinePosition = _preview.TimelinePosition;
 			if ( _followPreview && _preview.PlaybackState != AudioPlaybackState.Stopped )
 				_workspace.FollowTimelinePosition();
-			if ( _preview.PlaybackState == AudioPlaybackState.Stopped )
+			if ( AudioPreviewTransportMath.ShouldRepeatPreview(
+				_repeatPreview,
+				_preview.Paused,
+				_workspace.TimelinePosition,
+				instrumentStates ) )
 			{
-				var completedPosition = _workspace.TimelinePosition;
+				DisposePreview( false );
+				_workspace.TimelinePosition = 0f;
+				TogglePreview();
+			}
+			else if ( _preview.PlaybackState == AudioPlaybackState.Stopped )
+			{
 				_preview.Release();
 				_preview = null;
-				if ( _repeatPreview && completedPosition > 0f )
-				{
-					_workspace.TimelinePosition = 0f;
-					TogglePreview();
-				}
 			}
 		}
 		UpdateTransport();

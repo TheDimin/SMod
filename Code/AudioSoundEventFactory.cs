@@ -1,6 +1,6 @@
 namespace Smod;
 
-internal static class AudioSoundEventFactory
+public static class AudioSoundEventFactory
 {
 	public static SoundEventResource CreateEmbedded( IReadOnlyList<SoundFile> sounds )
 	{

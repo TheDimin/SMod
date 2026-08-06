@@ -802,6 +802,48 @@ public sealed class AudioEventTests
 	}
 
 	[TestMethod]
+	public void AdaptiveEvent_EditorRepeatCompletesAfterSelectedVoiceFinishes()
+	{
+		var weaponKind = new AudioParameter
+		{
+			Name = "WeaponKind",
+			Type = AudioParameterType.Labeled,
+			Labels = new() { "fist", "sword" },
+			DefaultLabel = "fist"
+		};
+		var audioEvent = new AudioEvent
+		{
+			Parameters = new() { weaponKind },
+			Tracks = new()
+			{
+				new AudioTrack
+				{
+					Name = "Fist",
+					Conditions = new() { new AudioParameterCondition { Parameter = weaponKind, Label = "fist" } },
+					Instruments = new() { new AudioInstrument { Sound = CreateSoundEvent() } }
+				},
+				new AudioTrack
+				{
+					Name = "Sword",
+					Conditions = new() { new AudioParameterCondition { Parameter = weaponKind, Label = "sword" } },
+					Instruments = new() { new AudioInstrument { Sound = CreateSoundEvent() } }
+				}
+			}
+		};
+		var instance = AudioSystem.GetEvent( audioEvent ).CreateInstance();
+		instance.Start();
+		_backend.Voices.Single().IsPlaying = false;
+		_timeline.Advance( 0.25f );
+
+		Assert.AreEqual( AudioPlaybackState.Playing, instance.PlaybackState );
+		Assert.IsTrue( Editor.AudioPreviewTransportMath.ShouldRepeatPreview(
+			repeatEnabled: true,
+			paused: false,
+			instance.TimelinePosition,
+			instance.InstrumentPlaybackStates ) );
+	}
+
+	[TestMethod]
 	public void InstanceProperties_UpdateActiveVoices()
 	{
 		var instance = AudioSystem.GetEvent( CreateEvent() ).CreateInstance();
