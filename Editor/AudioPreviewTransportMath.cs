@@ -10,4 +10,16 @@ internal static class AudioPreviewTransportMath
 			return 0f;
 		return timelinePosition;
 	}
+
+	public static bool ShouldRepeatPreview(
+		bool repeatEnabled,
+		bool paused,
+		float timelinePosition,
+		IReadOnlyList<Smod.AudioInstrumentPlaybackState> instrumentStates )
+	{
+		return repeatEnabled
+			&& !paused
+			&& timelinePosition > 0f
+			&& instrumentStates.All( state => !state.IsPlaying && !state.IsPending );
+	}
 }
