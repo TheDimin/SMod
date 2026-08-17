@@ -3,6 +3,7 @@ using System.Text.Json.Serialization;
 namespace Smod;
 
 [Icon( "speaker" ), Group( "Audio" ), Title( "Sound Point" )]
+[Description( "Plays an authored audio event at this GameObject, applies typed parameter values, and manages playback on enable, disable, and start." )]
 public sealed class SoundPointComponent : Component
 {
 	private AudioEvent _audioEvent;
