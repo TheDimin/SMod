@@ -10,7 +10,7 @@ using Smod.Editor;
 namespace Editor;
 
 [EditorForAssetType( "audevt" )]
-public sealed class AudioEventEditorWindow : DockWindow, IAssetEditor, AssetSystem.IEventListener
+public sealed partial class AudioEventEditorWindow : DockWindow, IAssetEditor, AssetSystem.IEventListener
 {
 	private readonly UndoSystem _undo = new();
 	private readonly Dictionary<GameResource, JsonObject> _savedStates = new( ReferenceEqualityComparer.Instance );
@@ -24,6 +24,23 @@ public sealed class AudioEventEditorWindow : DockWindow, IAssetEditor, AssetSyst
 	private AudioEventInstance _preview;
 	private AudioEventWorkspaceWidget _workspace;
 	private AudioSoundLibraryWidget _soundLibrary;
+ private AudioEventLibraryWidget _eventLibrary;
+ private static WeakReference<AudioEventEditorWindow> lastWindow;
+
+ [Menu("Editor", "Tools/Audio Event Editor", "graphic_eq")]
+ public static void OpenFromTools()
+ {
+  var window=UseSingleWindow();
+  window.DockManager.OpenDock("Audio Events",DockArea.Left);window.Show();window.Raise();window.Focus();
+ }
+ internal static object CheckEventBrowser()
+ {
+  OpenFromTools();lastWindow.TryGetTarget(out var window);
+  window._eventLibrary.SetSearch("cafe_music_loop");
+  var matched=window._eventLibrary.MatchCount;
+  window._eventLibrary.SetSearch("");
+  return new{WindowOpen=window.IsValid,Events=window._eventLibrary.EventCount,SearchMatches=matched,AllVisible=window._eventLibrary.MatchCount};
+ }
 	private AudioCloudSoundLibraryWidget _cloudSoundLibrary;
 	private AudioEventInspectorWidget _inspector;
 	private AudioEventParameterWidget _parameters;
@@ -40,6 +57,7 @@ public sealed class AudioEventEditorWindow : DockWindow, IAssetEditor, AssetSyst
 	private object _selection;
 	private bool _closingAfterPrompt;
 	private bool _saving;
+	private string _previewError;
 	private bool _repeatPreview;
 	private bool _followPreview = true;
 
@@ -51,6 +69,9 @@ public sealed class AudioEventEditorWindow : DockWindow, IAssetEditor, AssetSyst
 	public AudioEventEditorWindow()
 	{
 		DeleteOnClose = true;
+        lastWindow=new(this);
+        IAssetEditor.OpenMultiAssetEditors["audevt"]=this;
+        Title="Audio Event Editor";
 		Size = new Vector2( 1440f, 860f );
 		MinimumSize = new Vector2( 1050f, 620f );
 		StateCookie = "Smod.AudioEventEditor";
@@ -69,15 +90,17 @@ public sealed class AudioEventEditorWindow : DockWindow, IAssetEditor, AssetSyst
 
 	public void AssetOpen( Asset asset )
 	{
-		if ( _asset is not null )
-			return;
 		if ( asset is null )
 			return;
 
-		var audioEvent = asset.LoadResource<AudioEvent>();
+        if (_asset?.AbsolutePath==asset.AbsolutePath){Raise();Focus();return;}
+		var audioEvent = _savedStates.Keys.OfType<AudioEvent>().FirstOrDefault(e=>e.ResourcePath==asset.RelativePath)
+            ?? asset.LoadResource<AudioEvent>();
 		if ( audioEvent is null )
 			throw new InvalidOperationException( $"Could not load AudioEvent '{asset.Path}'." );
 
+		DetachLive();
+		DisposePreview(false);
 		_asset = asset;
 		_event = audioEvent;
 		RegisterResource( audioEvent );
@@ -112,6 +135,7 @@ public sealed class AudioEventEditorWindow : DockWindow, IAssetEditor, AssetSyst
 	{
 		var workspace = DockManager.OpenDock( "Timeline", DockArea.Center );
 		var soundFiles = DockManager.OpenDock( "Sound Files", DockArea.Left, workspace );
+        DockManager.OpenDock("Audio Events",DockArea.Top,soundFiles);
 		DockManager.OpenDock( "Cloud Sounds", DockArea.Bottom, soundFiles );
 		DockManager.OpenDock( "Inspector", DockArea.Right, workspace );
 		var parameters = DockManager.OpenDock( "Parameters", DockArea.Bottom, workspace );
@@ -125,6 +149,7 @@ public sealed class AudioEventEditorWindow : DockWindow, IAssetEditor, AssetSyst
 	{
 		_workspace = new AudioEventWorkspaceWidget( this );
 		_soundLibrary = new AudioSoundLibraryWidget( this );
+        _eventLibrary = new AudioEventLibraryWidget(this);
 		_cloudSoundLibrary = new AudioCloudSoundLibraryWidget( this );
 		_inspector = new AudioEventInspectorWidget( this );
 		_parameters = new AudioEventParameterWidget( this );
@@ -132,6 +157,7 @@ public sealed class AudioEventEditorWindow : DockWindow, IAssetEditor, AssetSyst
 
 		DockManager.AddDock( "Timeline", "timeline", _workspace, DockArea.Center );
 		DockManager.AddDock( "Sound Files", "audio_file", _soundLibrary, DockArea.Left );
+        DockManager.AddDock("Audio Events","library_music",_eventLibrary,DockArea.Left);
 		DockManager.AddDock( "Cloud Sounds", "audio_file", _cloudSoundLibrary, DockArea.Left );
 		DockManager.AddDock( "Inspector", "edit", _inspector, DockArea.Right );
 		DockManager.AddDock( "Parameters", "tune", _parameters, DockArea.Bottom );
@@ -178,6 +204,7 @@ public sealed class AudioEventEditorWindow : DockWindow, IAssetEditor, AssetSyst
 		_toolbar.AddOption( "Zoom Out", "zoom_out", () => _workspace?.Zoom( 1f / 1.2f ) );
 		_toolbar.AddOption( "Frame Event", "fit_screen", () => _workspace?.FrameEvent() );
 		_toolbar.AddOption( "Event Settings", "tune", () => SelectObject( _event ) );
+        CreateLiveToolbar();
 
 		_timecode = _toolbar.AddWidget( new Label( "00:00.000 / 00:00.000" ) );
 		_timecode.MinimumWidth = 190f;
@@ -191,6 +218,9 @@ public sealed class AudioEventEditorWindow : DockWindow, IAssetEditor, AssetSyst
 		if ( _event is null )
 			return false;
 
+		ReconcileSavedAudio();
+		try { foreach(var resource in _dirtyResources) EnsureAudioSaveIsCurrent(resource); }
+		catch(Exception error) { Log.Warning(error.Message); return false; }
 		var success = true;
 		_saving = true;
 		try
@@ -240,6 +270,8 @@ public sealed class AudioEventEditorWindow : DockWindow, IAssetEditor, AssetSyst
 	[Shortcut( "audio.preview", "SPACE", ShortcutType.Window )]
 	private void TogglePreview()
 	{
+        if(LiveAttached)DetachLive();
+		_previewError = null;
 		if ( _event is null )
 			return;
 
@@ -247,6 +279,8 @@ public sealed class AudioEventEditorWindow : DockWindow, IAssetEditor, AssetSyst
 		if ( !validation.IsValid )
 		{
 			_issues.SetValidation( validation );
+			_previewError = "Cannot preview: " + validation.Issues.First().Message;
+			UpdateTransport();
 			return;
 		}
 
@@ -320,6 +354,7 @@ public sealed class AudioEventEditorWindow : DockWindow, IAssetEditor, AssetSyst
 
 	internal void SetPreviewPosition( float position )
 	{
+        if(LiveAttached)return;
 		position = MathF.Max( 0f, position );
 		_workspace.TimelinePosition = position;
 		if ( _preview?.IsValid ?? false )
@@ -329,6 +364,7 @@ public sealed class AudioEventEditorWindow : DockWindow, IAssetEditor, AssetSyst
 
 	internal void SetPreviewParameter( AudioParameter parameter, float value, string label )
 	{
+        if(LiveAttached)return;
 		if ( !(_preview?.IsValid ?? false) )
 			return;
 		if ( parameter.Type == AudioParameterType.Labeled )
@@ -339,13 +375,43 @@ public sealed class AudioEventEditorWindow : DockWindow, IAssetEditor, AssetSyst
 
 	internal void PreviewAuthoredChange()
 	{
-		if ( !(_preview?.IsValid ?? false) || _preview.PlaybackState == AudioPlaybackState.Stopped )
-			return;
-		_preview.RefreshAuthoredPropertiesForAudition();
+		try
+		{
+			if ( !(_preview?.IsValid ?? false) || _preview.PlaybackState == AudioPlaybackState.Stopped )
+				return;
+			_preview.RefreshAuthoredPropertiesForAudition();
+		}
+		catch ( InvalidOperationException error )
+		{
+			if ( !StopInvalidOwnedPreview( error ) ) throw;
+		}
+	}
+
+	private bool StopInvalidOwnedPreview( Exception error )
+	{
+		if ( !(_preview?.IsValid ?? false) ) return false;
+		var validation = AudioEventValidator.Validate( _event );
+		if ( validation.IsValid ) return false;
+		DisposePreview( false );
+		_issues.SetValidation( validation );
+		_previewError = "Preview stopped: " + error.Message;
+		UpdateTransport();
+		Log.Warning( "Audio preview stopped for an invalid draft: " + error.Message );
+		return true;
 	}
 
 	[EditorEvent.Frame]
 	private void OnFrame()
+	{
+        if(UpdateLiveOverlay())return;
+		try { UpdateOwnedPreviewFrame(); }
+		catch ( InvalidOperationException error )
+		{
+			if ( !StopInvalidOwnedPreview( error ) ) throw;
+		}
+	}
+
+	private void UpdateOwnedPreviewFrame()
 	{
 		if ( _preview?.IsValid ?? false )
 		{
@@ -365,6 +431,8 @@ public sealed class AudioEventEditorWindow : DockWindow, IAssetEditor, AssetSyst
 			}
 			else if ( _preview.PlaybackState == AudioPlaybackState.Stopped )
 			{
+				if ( !string.IsNullOrEmpty( _preview.SharedMusicError ) )
+					_previewError = "Preview failed: " + _preview.SharedMusicError;
 				_preview.Release();
 				_preview = null;
 			}
@@ -400,7 +468,7 @@ public sealed class AudioEventEditorWindow : DockWindow, IAssetEditor, AssetSyst
 		}
 		var current = TimeSpan.FromSeconds( _workspace.TimelinePosition );
 		var duration = TimeSpan.FromSeconds( _workspace.Duration );
-		_timecode.Text = $"{current:mm\\:ss\\.fff} / {duration:mm\\:ss\\.fff}";
+		_timecode.Text = _previewError ?? $"{current:mm\\:ss\\.fff} / {duration:mm\\:ss\\.fff}";
 	}
 
 	internal void SelectObject( object value )
@@ -456,6 +524,7 @@ public sealed class AudioEventEditorWindow : DockWindow, IAssetEditor, AssetSyst
 
 	private void ApplyTrackAuditionToPreview()
 	{
+		if(LiveAttached){ApplyLiveAudition();return;}
 		if ( !(_preview?.IsValid ?? false) )
 			return;
 		foreach ( var track in _event?.Tracks?.Where( track => track is not null ) ?? Enumerable.Empty<AudioTrack>() )
@@ -682,6 +751,14 @@ internal void RemoveInstrument( AudioTrack track, AudioInstrument instrument )
 			duplicate = new AudioInstrument
 			{
 				Sound = instrument.Sound,
+				Name = instrument.Name,
+				SubEventSelection = instrument.SubEventSelection,
+				SubEventQuantization = instrument.SubEventQuantization,
+                RotateSubEventsAtEnd = instrument.RotateSubEventsAtEnd,
+                SubEventTransitionBeats = instrument.SubEventTransitionBeats,
+				SubEvents = instrument.SubEvents?.Select( choice => new AudioSubEventChoice { Event = choice.Event,
+					Conditions = choice.Conditions.Select( condition => new AudioParameterCondition { Parameter = condition.Parameter,
+						Minimum = condition.Minimum, Maximum = condition.Maximum, Label = condition.Label, Invert = condition.Invert } ).ToList() } ).ToList() ?? new(),
 				StartTime = instrument.StartTime + AudioTimelineView.EstimateDuration( instrument ),
 				TrimStart = instrument.TrimStart,
 				TrimEnd = instrument.TrimEnd,
@@ -1041,6 +1118,8 @@ internal void RemoveInstrument( AudioTrack track, AudioInstrument instrument )
 
 	private void RestoreState( GameResource resource, JsonObject state )
 	{
+		if(resource is AudioEvent restoredEvent && !ReferenceEquals(resource,_event))
+            AssetOpen(ResolveAsset(restoredEvent));
 		resource.Deserialize( state );
 		_lastStates[resource] = resource.Serialize();
 		UpdateDirtyState( resource );
@@ -1070,7 +1149,7 @@ internal void RemoveInstrument( AudioTrack track, AudioInstrument instrument )
 
 	private static bool StatesEqual( JsonObject left, JsonObject right )
 	{
-		return string.Equals( left?.ToJsonString(), right?.ToJsonString(), StringComparison.Ordinal );
+		return AudioDocumentSaveState.Matches( left, right );
 	}
 
 	private void RefreshAfterMutation( bool restartPreview = false )
@@ -1109,7 +1188,8 @@ internal void RemoveInstrument( AudioTrack track, AudioInstrument instrument )
 		_inspector.SetSelection( _selection ?? _event );
 		var validation = AudioEventValidator.Validate( _event );
 		_issues.SetValidation( validation );
-		_playOption.Enabled = validation.IsValid;
+		_playOption.Enabled = _event is not null;
+		if ( validation.IsValid ) _previewError = null;
 		UpdateTransport();
 	}
 
@@ -1122,7 +1202,8 @@ internal void RemoveInstrument( AudioTrack track, AudioInstrument instrument )
 		_inspector.SetSelection( _selection ?? _event );
 		var validation = _event is null ? null : AudioEventValidator.Validate( _event );
 		_issues.SetValidation( validation );
-		_playOption.Enabled = validation?.IsValid ?? false;
+		_playOption.Enabled = _event is not null;
+		if ( validation?.IsValid ?? false ) _previewError = null;
 		UpdateTransport();
 	}
 
@@ -1196,8 +1277,17 @@ internal void RemoveInstrument( AudioTrack track, AudioInstrument instrument )
 
 	void AssetSystem.IEventListener.OnAssetChanged( Asset asset )
 	{
+		if ( asset is not null )
+			AudioWaveformSourceCache.Invalidate( asset.RelativePath );
 		if ( asset is null || _saving )
 			return;
+		if ( _event is not null && EnumerateInstruments()
+			.SelectMany( instrument => instrument.Sound?.Tracks ?? new() )
+			.Any( track => string.Equals( AudioWaveformSourceCache.Key( track.Sound ), asset.RelativePath, StringComparison.OrdinalIgnoreCase ) ) )
+		{
+			ReloadUi();
+			return;
+		}
 		if ( asset == _asset )
 		{
 			if ( _dirtyResources.Contains( _event ) )
@@ -1249,11 +1339,16 @@ internal void RemoveInstrument( AudioTrack track, AudioInstrument instrument )
 
 	private void ReloadEventAsset( Asset asset )
 	{
+		var replacement = asset.LoadResource<AudioEvent>();
+		if ( replacement is null ) return;
 		DisposePreview( false );
-		_dirtyResources.Remove( _event );
-		_savedStates.Remove( _event );
-		_lastStates.Remove( _event );
-		_event = asset.LoadResource<AudioEvent>();
+		if ( _event is not null )
+		{
+			_dirtyResources.Remove( _event );
+			_savedStates.Remove( _event );
+			_lastStates.Remove( _event );
+		}
+		_event = replacement;
 		RegisterResource( _event );
 		_selection = _event;
 		ReloadUi();
@@ -1328,6 +1423,29 @@ internal void RemoveInstrument( AudioTrack track, AudioInstrument instrument )
 		UpdateWindowTitle();
 	}
 
+ internal async Task<object> CheckTimelineZoomAsync()
+ {
+  var sources=EnumerateInstruments().SelectMany(i=>i.Sound?.Tracks ?? new()).Select(t=>t.Sound).Where(s=>s.IsValid()).Distinct().ToArray();
+  await Task.WhenAll(sources.Select(AudioWaveformSourceCache.LoadAsync));
+  return _workspace.CheckTimelineZoom();
+ }
+
+	internal async System.Threading.Tasks.Task<object> CheckWaveformReloadAsync()
+	{
+		var sources = EnumerateInstruments().SelectMany( instrument => instrument.Sound?.Tracks ?? new() )
+			.Select( track => track.Sound ).Where( sound => sound.IsValid() )
+			.GroupBy( AudioWaveformSourceCache.Key ).Select( group => group.First() ).ToArray();
+		await System.Threading.Tasks.Task.WhenAll( sources.Select( AudioWaveformSourceCache.LoadAsync ) );
+		var decodes = AudioWaveformSourceCache.DecodeCount;
+		var hits = AudioWaveformSourceCache.CacheHits;
+		var watch = System.Diagnostics.Stopwatch.StartNew();
+		ReloadUi();
+		await System.Threading.Tasks.Task.WhenAll( sources.Select( AudioWaveformSourceCache.LoadAsync ) );
+		return new { Event = _event.ResourcePath, Sources = sources.Length, ReloadMilliseconds = watch.Elapsed.TotalMilliseconds,
+			AdditionalDecodes = AudioWaveformSourceCache.DecodeCount - decodes,
+			CacheHits = AudioWaveformSourceCache.CacheHits - hits, CachedBytes = AudioWaveformSourceCache.CachedBytes };
+	}
+
 	private IEnumerable<AudioInstrument> EnumerateInstruments()
 	{
 		foreach ( var instrument in _event.MasterTrack?.Instruments?.Where( instrument => instrument is not null ) ?? Enumerable.Empty<AudioInstrument>() )
@@ -1363,19 +1481,20 @@ internal void RemoveInstrument( AudioTrack track, AudioInstrument instrument )
 
 	protected override bool OnClose()
 	{
+		ReconcileSavedAudio();
 		if ( _closingAfterPrompt || _dirtyResources.Count == 0 )
 			return true;
 
 		var popup = new PopupWindow(
 			"Save Audio Changes",
-			"This audio event or one of its referenced audio resources has unsaved changes.",
+			"These audio files have unsaved editor changes:\n" + string.Join("\n", _dirtyResources.Select(r=>r.ResourcePath)) + "\nSaved agent changes do not need another save. Discard restores the current files on disk.",
 			"Cancel",
 			new Dictionary<string, Action>
 			{
 				["Discard"] = () =>
 				{
-					foreach ( var pair in _savedStates )
-						pair.Key.Deserialize( pair.Value );
+					try { DiscardAudioDrafts(); }
+					catch(Exception error) { Log.Warning(error.Message); return; }
 					_closingAfterPrompt = true;
 					Close();
 				},
@@ -1393,6 +1512,7 @@ internal void RemoveInstrument( AudioTrack track, AudioInstrument instrument )
 
 	protected override void OnClosed()
 	{
+		ReleaseLiveAudition();
 		AudioPreviewPlaybackService.Instance.StopForOwner( this );
 		StopPreview();
 		SaveToStateCookie();
@@ -1417,7 +1537,9 @@ internal sealed class AudioEventWorkspaceWidget : Widget
 	}
 
 	public float Duration => _timeline?.Duration ?? 1f;
+ internal object CheckTimelineZoom() => _timeline.CheckTimelineZoom();
 	public float AudioContentEnd => _timeline?.AudioContentEnd ?? 0f;
+	internal int SubGraphBlockCount => _timeline?.SubGraphBlockCount ?? 0;
 
 	public AudioEventWorkspaceWidget( AudioEventEditorWindow window ) : base( window )
 	{
@@ -1459,6 +1581,8 @@ internal sealed class AudioEventWorkspaceWidget : Widget
 		_timeline?.FrameEvent();
 	}
 
+	public void FocusElement(object value, double time) => _timeline?.FocusElement(value, time);
+
 	public void FollowTimelinePosition()
 	{
 		_timeline?.FollowTimelinePosition();
@@ -1468,6 +1592,8 @@ internal sealed class AudioEventWorkspaceWidget : Widget
 	{
 		_timeline?.UpdateTrackAudition();
 	}
+
+	public void UpdateLiveOverlay(AudioLiveSnapshot snapshot) => _timeline?.UpdateLiveOverlay(snapshot);
 
 	public void UpdatePlaybackVisualization( IReadOnlyList<AudioInstrumentPlaybackState> states )
 	{
@@ -1497,6 +1623,8 @@ internal sealed class AudioSoundLibraryWidget : Widget, AssetSystem.IEventListen
 	private readonly Label _count;
 	private readonly AudioSoundLibraryList _list;
 	private AudioLibraryItem[] _items = [];
+ private AudioLibraryItem[] _externalItems = [];
+ private int _externalRequest;
 
 	public AudioSoundLibraryWidget( AudioEventEditorWindow window ) : base( window )
 	{
@@ -1524,20 +1652,39 @@ internal sealed class AudioSoundLibraryWidget : Widget, AssetSystem.IEventListen
 		hint.MaximumHeight = 38f;
 
 		_list = Layout.Add( new AudioSoundLibraryList( this, _window, AddSound, SliceSound, OpenSound, InspectSound ), 1 );
-		RefreshAssets();
+		RefreshProjectAssets();
+		_ = RefreshExternalAssetsAsync(false);
 	}
 
-	private void RefreshAssets()
-	{
-		var project = AssetSystem.All
-			.Where( asset => asset?.AssetType == AssetType.SoundFile )
-			.Select( AudioLibraryItem.FromAsset );
-		var external = ExternalAudioSourceCatalog.Scan().Select( AudioLibraryItem.FromExternal );
-		_items = project.Concat( external )
-			.OrderBy( item => item.RelativePath, StringComparer.OrdinalIgnoreCase )
-			.ToArray();
-		ApplySearch();
-	}
+ private void RefreshAssets() => _ = RefreshExternalAssetsAsync(true);
+
+ private async Task RefreshExternalAssetsAsync(bool force)
+ {
+  var request=++_externalRequest;
+  try
+  {
+   var files=await ExternalAudioSourceCatalog.ScanSharedAsync(force);
+   await GameTask.MainThread();
+   if(!IsValid || request!=_externalRequest)return;
+   _externalItems=files.Select(AudioLibraryItem.FromExternal).ToArray();
+   RefreshProjectAssets();
+  }
+  catch(Exception exception)
+  {
+   if(IsValid)Log.Warning(exception,"Could not refresh the external audio library.");
+  }
+ }
+
+ private void RefreshProjectAssets()
+ {
+  var next=AssetSystem.All
+   .Where(asset=>asset?.AssetType==AssetType.SoundFile)
+   .Select(AudioLibraryItem.FromAsset).Concat(_externalItems)
+   .OrderBy(item=>item.RelativePath,StringComparer.OrdinalIgnoreCase).ToArray();
+  if(_items.SequenceEqual(next))return;
+  _items=next;
+  ApplySearch();
+ }
 
 	private void ApplySearch()
 	{
@@ -1615,8 +1762,8 @@ internal sealed class AudioSoundLibraryWidget : Widget, AssetSystem.IEventListen
 		if ( item.Asset is not null ) EditorUtility.InspectorObject = item.Asset;
 	}
 
-	void AssetSystem.IEventListener.OnAssetSystemChanges() => RefreshAssets();
-	void AssetSystem.IEventListener.OnAssetTagsChanged() => RefreshAssets();
+	void AssetSystem.IEventListener.OnAssetSystemChanges() => RefreshProjectAssets();
+	void AssetSystem.IEventListener.OnAssetTagsChanged() { }
 
 	protected override void OnPaint()
 	{
@@ -1718,6 +1865,7 @@ internal sealed class AudioSoundLibraryList : ListView
 		if ( value is not AudioLibraryItem item ) return;
 		var menu = new ContextMenu( this );
 		menu.AddHeading( item.Name );
+		AudioEventEditorWindow.AddLibraryGetPath( menu, item.Source == AudioLibrarySource.External ? "external" : "asset", item.Source == AudioLibrarySource.External ? item.ExternalPath : item.RelativePath );
 		menu.AddOption( "Add at Playhead", "add", () => _addSound( item ) );
 		if ( item.Source == AudioLibrarySource.Project )
 		{
@@ -1814,6 +1962,7 @@ internal sealed class AudioTimelineView : GraphicsView
 
 	public float Duration => _duration;
 	public float AudioContentEnd => _audioContentEnd;
+	internal int SubGraphBlockCount => _items.OfType<AudioInstrumentBlockItem>().Count( block => block.Instrument.IsSubEvent );
 	internal IReadOnlyList<AudioTimelineTrackLayout> TrackLayouts => _trackLayouts;
 	internal int ReorderTargetRegularIndex => _reorderTargetRegularIndex;
 	public float PixelsPerSecond
@@ -1879,7 +2028,19 @@ internal sealed class AudioTimelineView : GraphicsView
 		}
 	}
 
-	public void UpdatePlaybackVisualization( IReadOnlyList<AudioInstrumentPlaybackState> states )
+	public void UpdateLiveOverlay(AudioLiveSnapshot snapshot)
+    {
+        var voices=snapshot?.Voices.ToLookup(voice=>voice.InstrumentId);
+        foreach(var block in _items.OfType<AudioInstrumentBlockItem>())
+        {
+            var rows=voices?[block.Instrument.Id].ToArray() ?? Array.Empty<AudioLiveVoice>();
+            var live=block.SetLiveStates(rows);
+            if(_event.Tracks.Any(x=>x.Overlay?.Enabled==true && x.Instruments.Contains(block.Instrument)))
+                block.Position=new Vector2(PositionFromTime(live is not null && live.State!="Inactive" ? live.Start : block.Instrument.StartTime),block.Position.y);
+        }
+    }
+
+    public void UpdatePlaybackVisualization( IReadOnlyList<AudioInstrumentPlaybackState> states )
 	{
 		foreach ( var block in _items.OfType<AudioInstrumentBlockItem>() )
 		{
@@ -2382,10 +2543,35 @@ internal sealed class AudioTimelineView : GraphicsView
 		_window.RemoveTrack( track );
 	}
 
+ internal object CheckTimelineZoom()
+ {
+  var originalScale=_pixelsPerSecond;var originalCenter=Center;
+  var samples=new List<object>();
+  try
+  {
+   foreach(var scale in new[]{100f,150f,100f})
+   {
+    var watch=System.Diagnostics.Stopwatch.StartNew();
+    ApplyTimelineScale(scale);CenterOn(new Vector2(PositionFromTime(0),originalCenter.y));
+    var left=ToScene(ContentRect.TopLeft);var right=ToScene(ContentRect.BottomRight);
+    long bytes=0;var blocks=0;
+    foreach(var block in _items.OfType<AudioInstrumentBlockItem>())
+    {
+     if(block.Position.x>right.x || block.Position.x+block.Width<left.x || block.Position.y>right.y || block.Position.y+block.Height<left.y)continue;
+     bytes+=block.CheckStaticTiles();blocks++;
+    }
+    samples.Add(new{Scale=scale,Milliseconds=watch.Elapsed.TotalMilliseconds,TileBytes=bytes,VisibleBlocks=blocks});
+   }
+   return new{Event=_event.ResourcePath,ViewportWidth=Width,Samples=samples};
+  }
+  finally{ApplyTimelineScale(originalScale);CenterOn(originalCenter);}
+ }
+
 	public void Zoom( float factor )
 	{
+		var verticalCenter = Center.y;
 		ApplyTimelineScale( _pixelsPerSecond * factor );
-		CenterOn( new Vector2( PositionFromTime( _timelinePosition ), 0f ) );
+		CenterOn( new Vector2( PositionFromTime( _timelinePosition ), verticalCenter ) );
 	}
 
 	public void FrameEvent()
@@ -2433,6 +2619,16 @@ internal sealed class AudioTimelineView : GraphicsView
 
 		_background?.Update();
 		Update();
+	}
+
+	public void FocusElement(object value, double time)
+	{
+		var layout = _trackLayouts.FirstOrDefault(row => ReferenceEquals(row.Track, value)
+			|| row.Track.Instruments.Any(instrument => ReferenceEquals(instrument, value)
+				|| instrument.Automations.Any(a => ReferenceEquals(a, value) || a.Points.Any(p => ReferenceEquals(p, value))))
+			|| row.Track.Automations.Any(a => ReferenceEquals(a, value) || a.Points.Any(p => ReferenceEquals(p, value))));
+		var y = layout.Track is null ? ToScene(ContentRect.Center).y : layout.Top + (layout.Bottom - layout.Top) * 0.5f;
+		CenterOn(new Vector2(PositionFromTime((float)time), y));
 	}
 
 	public void FollowTimelinePosition()
@@ -2484,6 +2680,17 @@ internal sealed class AudioTimelineView : GraphicsView
 
 		var menu = new ContextMenu( this );
 		menu.AddHeading( InstrumentName( instrument ) );
+		_window.AddGetPath( menu, instrument );
+		if ( instrument.IsSubEvent )
+		{
+			menu.AddOption( "Open Active Sub-graph", "account_tree", block.OpenActiveChild );
+			foreach ( var choice in instrument.SubEvents.Where( choice => choice?.Event is not null ) )
+			{
+				var child = choice.Event;
+				menu.AddOption( $"Edit Sub-graph: {child.ResourceName}", "open_in_new", () => AudioEventEditorWindow.OpenChildEvent( child.ResourcePath ) );
+			}
+			menu.AddOption( "Add Sub-graph Choice", "add", () => ShowSubEventPicker( track, instrument.StartTime, instrument ) );
+		}
 		menu.AddOption( "Play Event From Instrument Start", "play_arrow", () => _window.PlayEventFrom( instrument.StartTime ) );
 		menu.AddOption( "Move Playhead to Instrument", "vertical_align_center", () => MovePlayhead( PositionFromTime( instrument.StartTime ) ) );
 		menu.AddOption( $"Move Instrument to Playhead ({_timelinePosition:0.00}s)", "start", () => _window.MoveInstrument( track, track, instrument, _timelinePosition ) );
@@ -2537,6 +2744,7 @@ internal sealed class AudioTimelineView : GraphicsView
 			LoopRegion headingLoop => $"Loop: {headingLoop.Name ?? headingLoop.Id.ToString()}",
 			_ => "Timeline Control"
 		} );
+		_window.AddGetPath( menu, control );
 		menu.AddOption( "Edit Properties", "tune", () => SelectTimelineControl( control ) );
 		if ( control is DestinationMarker destination )
 			menu.AddOption( "Move Playhead Here", "vertical_align_center", () => MovePlayhead( PositionFromTime( (float)destination.Position.Seconds ) ) );
@@ -2575,8 +2783,9 @@ internal sealed class AudioTimelineView : GraphicsView
 		var trackIndex = TrackIndexFromPosition( scenePosition.y );
 		if ( scenePosition.y < RulerHeight || _trackLayouts.Count == 0 || scenePosition.y >= _trackLayouts[^1].Bottom || trackIndex < 0 || trackIndex >= _trackLayouts.Count )
 		{
+			_window.AddGetPath( menu, _event, controlTime );
 			menu.AddOption( "Edit Event Settings", "tune", () => _window.SelectObject( _event ) );
-			menu.AddOption( "Add Audio Track", "add", _window.AddTrack );
+		menu.AddOption( "Add Audio Track", "add", _window.AddTrack );
 			menu.AddOption( "Add Event Parameter", "tune", _window.AddParameter );
 			menu.OpenAt( e.ScreenPosition );
 			return;
@@ -2597,7 +2806,9 @@ internal sealed class AudioTimelineView : GraphicsView
 			: null;
 
 		menu.AddHeading( layout.IsMaster ? "Master Track" : track.Name );
+		_window.AddGetPath( menu, track, controlTime );
 		menu.AddOption( $"Add Sound Instrument at {startTime:0.00}s", "audio_file", () => ShowSoundPicker( track, startTime ) );
+		menu.AddOption( $"Add Sub-graph Instrument at {startTime:0.00}s", "account_tree", () => ShowSubEventPicker( track, startTime ) );
 		menu.AddOption( "Add Audio Track", "add", _window.AddTrack );
 		menu.AddOption( "Add Event Parameter", "tune", _window.AddParameter );
 		menu.AddSeparator();
@@ -2718,6 +2929,29 @@ internal sealed class AudioTimelineView : GraphicsView
 			_event.LoopRegions.Add( created );
 		} );
 		SelectTimelineControl( created );
+	}
+
+	private void ShowSubEventPicker( AudioTrack track, float startTime, AudioInstrument existing = null )
+	{
+		var picker = AssetPicker.Create( this, AssetType.FromExtension( "audevt" ), new AssetPicker.PickerOptions { EnableMultiselect = true, EnableCloud = false } );
+		picker.Window.Title = "Choose child Audio Events";
+		picker.OnAssetPicked = assets =>
+		{
+			var children = assets.Select( asset => asset.LoadResource<AudioEvent>() ).Where( child => child is not null ).ToArray();
+			if ( children.Length == 0 ) return;
+			AudioInstrument instrument = existing;
+			_window.MutateEvent( "Add Sub-graph Choices", () =>
+			{
+				if ( instrument is null )
+				{
+					instrument = new AudioInstrument { Name = "Sub-graph", StartTime = startTime };
+					track.Instruments.Add( instrument );
+				}
+				foreach ( var child in children ) instrument.SubEvents.Add( new() { Event = child } );
+			} );
+			SelectInstrument( instrument );
+		};
+		picker.Window.Show();
 	}
 
 	private void ShowSoundPicker( AudioTrack track, float startTime )
@@ -2871,7 +3105,10 @@ internal sealed class AudioTimelineView : GraphicsView
 
 	protected override void OnMouseWheel( WheelEvent e )
 	{
-		Zoom( e.Delta > 0f ? 1.1f : 1f / 1.1f );
+		if ( e.HasCtrl )
+			CenterOn( Center.WithY( Center.y - e.Delta * 0.5f / Scale.y ) );
+		else if ( e.Delta != 0f )
+			Zoom( e.Delta > 0f ? 1.1f : 1f / 1.1f );
 		e.Accept();
 	}
 
@@ -2954,6 +3191,8 @@ internal sealed class AudioTimelineView : GraphicsView
 
 	internal static float EstimateDuration( AudioInstrument instrument )
 	{
+		if ( instrument?.IsSubEvent == true )
+			return MathF.Max( .01f, (instrument.TrimEnd > 0 ? instrument.TrimEnd : instrument.SubEvents.Select( choice => choice?.Event?.TimelineDuration ?? 0 ).DefaultIfEmpty( 1f ).Max()) - instrument.TrimStart );
 		var sound = instrument?.Sound;
 		if ( sound?.Tracks is null || sound.Tracks.Count == 0 )
 			return 1f;
@@ -2968,6 +3207,8 @@ internal sealed class AudioTimelineView : GraphicsView
 
 	internal static string InstrumentName( AudioInstrument instrument )
 	{
+		if ( !string.IsNullOrWhiteSpace( instrument?.Name ) ) return instrument.Name;
+		if ( instrument?.IsSubEvent == true ) return $"Sub-graph ({instrument.SubEvents.Count} choices)";
 		var sound = instrument?.Sound;
 		if ( !string.IsNullOrWhiteSpace( sound?.ResourceName ) )
 			return sound.ResourceName;
@@ -2981,6 +3222,7 @@ internal sealed class AudioTimelineView : GraphicsView
 
 	internal static string InstrumentDescription( AudioInstrument instrument )
 	{
+		if ( instrument?.IsSubEvent == true ) return $"Sub-graph | {instrument.SubEventSelection} | inherits matching parent parameters\n{(instrument.RotateSubEventsAtEnd ? "Parent loops this node at each full song end.\n" : "")}Go To targets stay inside each event. Child events cannot control the parent or siblings.\n" + string.Join( "\n", instrument.SubEvents.Select( choice => choice?.Event?.ResourcePath ?? "Missing child" ) );
 		var sound = instrument?.Sound;
 		if ( !string.IsNullOrWhiteSpace( sound?.ResourcePath ) )
 			return sound.ResourcePath;
@@ -3345,10 +3587,21 @@ internal sealed class AudioEventInspectorWidget : Widget
 			_window.RegisterReferencedResource( selectedSound );
 		var sheet = new ControlSheet { IncludePropertyNames = true };
 		sheet.AddObject( _serialized, property => AudioTimelineInspectorUx.ShowInGenericSheet( selection, property.Name ) );
+        if(selection is AudioTrack selectedTrack)
+        {
+         if(selectedTrack.Tone is null){var add=_canvas.Layout.Add(new Button("Add Tone","equalizer"));add.Clicked+=()=>_window.MutateEvent("Add Track Tone",()=>selectedTrack.Tone=new AudioTone());}
+         if(selectedTrack.Overlay is null){var add=_canvas.Layout.Add(new Button("Add Overlay","queue_music"));add.Clicked+=()=>_window.MutateEvent("Add Track Overlay",()=>selectedTrack.Overlay=new AudioOverlayRule());}
+        }
+
 		_canvas.Layout.Add( sheet );
+		if ( selection is AudioEvent eventSelection && eventSelection.MusicPlaylist is null )
+		{
+			var playlist = _canvas.Layout.Add( new Button( "Add Music Playlist", "queue_music" ) );
+			playlist.Clicked += () => _window.MutateEvent( "Add Music Playlist", () => eventSelection.MusicPlaylist = new AudioMusicPlaylist() );
+		}
 		AddTimelineControlEditors( selection );
 		if ( selection is TransitionRegion transitionRegion
-			&& transitionRegion.Quantization is TransitionQuantization.NextBeat or TransitionQuantization.NextBar )
+			&& transitionRegion.Quantization is TransitionQuantization.NextBeat or TransitionQuantization.NextBar or TransitionQuantization.NextPhrase )
 			AddTempoAssistant( transitionRegion );
 
 		if ( selection is DestinationMarker destination )
@@ -3381,6 +3634,16 @@ internal sealed class AudioEventInspectorWidget : Widget
 			}
 		}
 
+		if ( selection is AudioInstrument nested && nested.IsSubEvent )
+		{
+			_canvas.Layout.Add( new Label( "Child events inherit matching parent parameters while active. Open a child to edit its timeline." ) { WordWrap = true } );
+			foreach ( var choice in nested.SubEvents.Where( choice => choice?.Event is not null ) )
+			{
+				var child = choice.Event;
+				var open = _canvas.Layout.Add( new Button( $"Open {child.ResourceName}", "account_tree" ) );
+				open.Clicked += () => AudioEventEditorWindow.OpenChildEvent( child.ResourcePath );
+			}
+		}
 		_canvas.Layout.AddStretchCell();
 		_canvas.Update();
 	}
@@ -3468,8 +3731,9 @@ internal sealed class AudioEventInspectorWidget : Widget
 		_applyTempo.Enabled = false;
 		_applyTempo.Clicked += ApplyDetectedTempo;
 
-		var tempo = _window.Event.TempoMap?.BeatsPerMinute ?? 0f;
-		var meterMessage = (_window.Event.TempoMap?.BeatsPerBar ?? 0) > 0
+		var grid = _window.Event.BeatGridAt( region.Start.Seconds );
+		var tempo = grid?.BeatsPerMinute ?? _window.Event.TempoMap?.BeatsPerMinute ?? 0f;
+		var meterMessage = (grid?.BeatsPerBar ?? _window.Event.TempoMap?.BeatsPerBar ?? 0) > 0
 			? ""
 			: " Beats per bar is invalid; 4 is suggested and will be set when applying a detected tempo.";
 		if ( AudioTempoAnalyzer.IsPlausibleTempo( tempo ) )
@@ -3528,7 +3792,9 @@ internal sealed class AudioEventInspectorWidget : Widget
 
 		_window.MutateEvent( "Apply Detected Tempo", () =>
 		{
-			_window.Event.TempoMap ??= new AudioTempoMap();
+			var grid = _tempoRegion is null ? null : _window.Event.BeatGridAt( _tempoRegion.Start.Seconds );
+            if ( grid is not null ) { grid.BeatsPerMinute = beatsPerMinute; return; }
+            _window.Event.TempoMap ??= new AudioTempoMap();
 			_window.Event.TempoMap.BeatsPerMinute = beatsPerMinute;
 			if ( _window.Event.TempoMap.BeatsPerBar <= 0 )
 				_window.Event.TempoMap.BeatsPerBar = 4;
@@ -3569,6 +3835,13 @@ internal sealed class AudioEventParameterWidget : Widget
 	private readonly Widget _canvas;
 	private readonly Dictionary<string, ParameterPreviewValue> _values = new( StringComparer.OrdinalIgnoreCase );
 	private AudioEvent _event;
+    private readonly Dictionary<string,Label> liveLabels=new();
+    private readonly List<Widget> previewControls=new();
+    public void SetLiveValues(AudioLiveSnapshot snapshot)
+    {
+        foreach(var control in previewControls)control.Visible=snapshot is null;
+        foreach(var pair in liveLabels)pair.Value.Text=snapshot?.Parameters.FirstOrDefault(x=>x.Name==pair.Key) is { } value ? "LIVE: "+value.Value : "";
+    }
 
 	public AudioEventParameterWidget( AudioEventEditorWindow window ) : base( window )
 	{
@@ -3592,6 +3865,7 @@ internal sealed class AudioEventParameterWidget : Widget
 	public void SetEvent( AudioEvent audioEvent )
 	{
 		_event = audioEvent;
+        liveLabels.Clear();previewControls.Clear();
 		_canvas.Layout.Clear( true );
 		if ( audioEvent?.Parameters is null )
 			return;
@@ -3619,9 +3893,11 @@ internal sealed class AudioEventParameterWidget : Widget
 			select.MinimumWidth = 140f;
 			select.Clicked += () => _window.SelectObject( parameter );
 
-			if ( parameter.Type == AudioParameterType.Labeled )
+			liveLabels[parameterKey]=row.Layout.Add(new Label(""){MinimumWidth=100});
+            if ( parameter.Type == AudioParameterType.Labeled )
 			{
 				var combo = row.Layout.Add( new ComboBox( row ), 1 );
+                previewControls.Add(combo);
 				foreach ( var label in parameter.Labels )
 					combo.AddItem( label, selected: string.Equals( label, value.Label, StringComparison.OrdinalIgnoreCase ) );
 				combo.ItemChanged += () =>
@@ -3640,7 +3916,8 @@ internal sealed class AudioEventParameterWidget : Widget
 					Value = value.Number
 				}, 1 );
 				var readout = row.Layout.Add( new Label( value.Number.ToString( "0.00" ) ) { MinimumWidth = 64f } );
-				slider.OnValueEdited = () =>
+				previewControls.Add(slider);previewControls.Add(readout);
+                slider.OnValueEdited = () =>
 				{
 					_values[parameterKey] = value with { Number = slider.Value };
 					readout.Text = slider.Value.ToString( parameter.Type == AudioParameterType.Discrete ? "0" : "0.00" );
@@ -3930,11 +4207,13 @@ internal sealed class AudioAutomationCurveWidget : Widget
 		if ( nearest is not null && Vector2.DistanceBetween( ToCanvas( nearest ), localPosition ) <= 12f )
 		{
 			menu.AddHeading( $"Automation Point {_automation.Points.IndexOf( nearest ) + 1}" );
+			_window.AddGetPath( menu, nearest );
 			if ( _automation.Points.Count > 2 )
 				menu.AddOption( "Delete Point", "delete", () => _window.MutateEvent( "Delete Automation Point", () => _automation.Points.Remove( nearest ) ) );
 		}
 		else
 		{
+			_window.AddGetPath( menu, _automation );
 			var point = FromCanvas( localPosition, OutputMaximum );
 			menu.AddOption( "Add Point Here", "add", () => _window.MutateEvent( "Add Automation Point", () =>
 			{

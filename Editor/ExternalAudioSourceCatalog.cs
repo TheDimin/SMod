@@ -23,9 +23,15 @@ internal static class ExternalAudioSourceCatalog
 {
 	public const string SourceRoot = @"AudioSource";
 	private static readonly string[] SupportedExtensions = [".wav", ".ogg"];
+ private static readonly AudioCatalogScanCache<ExternalAudioSourceFile[]> SharedScan = new();
+ internal static int ScanCount;
+ internal static Task<ExternalAudioSourceFile[]> ScanSharedAsync(bool refresh = false)
+  => SharedScan.Get(() => Task.Run(() => Scan()), refresh);
+
 
 	public static ExternalAudioSourceFile[] Scan( string sourceRoot = SourceRoot )
 	{
+		Interlocked.Increment(ref ScanCount);
 		if ( !Directory.Exists( sourceRoot ) ) return [];
 		var root = CanonicalRoot( sourceRoot );
 		try

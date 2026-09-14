@@ -1,0 +1,26 @@
+<Project Sdk="Microsoft.NET.Sdk">
+ <PropertyGroup>
+  <TargetFramework>net10.0</TargetFramework><LangVersion>14</LangVersion>
+  <AssemblyName>smod.tests</AssemblyName><IsTestProject>true</IsTestProject>
+  <ImplicitUsings>enable</ImplicitUsings><NoWarn>1591</NoWarn>
+  <DefineConstants>$(DefineConstants);SMOD_NATIVE_TEST_HOST</DefineConstants>
+  <SboxRoot Condition="'$(SboxRoot)' == ''">$(FACEPUNCH_ENGINE)</SboxRoot>
+ </PropertyGroup>
+ <ItemGroup>
+  <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />
+  <PackageReference Include="MSTest.TestAdapter" Version="3.10.5" />
+  <PackageReference Include="MSTest.TestFramework" Version="3.10.5" />
+  <ProjectReference Include="../Code/smod.csproj" /><Compile Include="../Editor/AudioPreviewTransportMath.cs" Link="AudioPreviewTransportMath.cs" />
+  <Compile Include="../Editor/AudioLiveAuditionSession.cs" Link="AudioLiveAuditionSession.cs" />
+  <Compile Include="../Editor/AudioVisibleTileRange.cs" Link="AudioVisibleTileRange.cs" />
+  <Compile Include="../Editor/AudioDocumentSaveState.cs" Link="AudioDocumentSaveState.cs" />
+  <Compile Include="../Editor/AudioAuthoringPatch.cs" Link="AudioAuthoringPatch.cs" />
+  <Compile Include="../Editor/AudioElementPath.cs" Link="AudioElementPath.cs" />
+  <Compile Include="../Editor/AudioCatalogScanCache.cs" Link="AudioCatalogScanCache.cs" />
+  <Compile Include="../Editor/AudioWaveformEnvelope.cs" Link="AudioWaveformEnvelope.cs" />
+  <Compile Include="../Editor/AudioTimelineInspectorUx.cs" Link="AudioTimelineInspectorUx.cs" />
+  <Reference Include="$(SboxRoot)/bin/managed/Sandbox.*.dll" />
+  <Reference Include="$(SboxRoot)/bin/managed/Facepunch.ActionGraphs.dll" />
+  <Reference Include="$(SboxRoot)/bin/managed/Microsoft.AspNetCore.Components.dll" />
+ </ItemGroup>
+</Project>

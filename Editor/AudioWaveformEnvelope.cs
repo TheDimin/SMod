@@ -6,12 +6,15 @@ internal readonly record struct AudioWaveformPeak( short Minimum, short Maximum 
 
 /// <summary>
 /// Stores multiresolution min/max peaks in a segment tree so a rendered waveform
-/// column can query its exact source range without rescanning interleaved samples.
+/// column can query peaks without rescanning samples. Boundary bins are conservative
+/// within 64 source frames (1.45 ms at 44.1 kHz); source audio is unchanged.
 /// </summary>
 internal sealed class AudioWaveformEnvelope
 {
 	private readonly AudioWaveformPeak[] _peaks;
 	private readonly int _leafOffset;
+	internal const int FramesPerBin = 64;
+	internal long StorageBytes => _peaks.LongLength * 4;
 
 	public int FrameCount { get; }
 
@@ -28,7 +31,7 @@ internal sealed class AudioWaveformEnvelope
 		channels = Math.Max( 1, channels );
 		var frameCount = samples.Length / channels;
 		var leafOffset = 1;
-		while ( leafOffset < frameCount )
+		while ( leafOffset < (frameCount + FramesPerBin - 1) / FramesPerBin )
 			leafOffset <<= 1;
 
 		var peaks = new AudioWaveformPeak[leafOffset * 2];
@@ -45,7 +48,8 @@ internal sealed class AudioWaveformEnvelope
 				minimum = Math.Min( minimum, sample );
 				maximum = Math.Max( maximum, sample );
 			}
-			peaks[leafOffset + frame] = new AudioWaveformPeak( minimum, maximum );
+			var leaf = leafOffset + frame / FramesPerBin;
+			peaks[leaf] = Combine( peaks[leaf], new AudioWaveformPeak( minimum, maximum ) );
 		}
 
 		for ( var node = leafOffset - 1; node > 0; node-- )
@@ -63,8 +67,8 @@ internal sealed class AudioWaveformEnvelope
 
 		var minimum = short.MaxValue;
 		var maximum = short.MinValue;
-		var left = _leafOffset + firstFrame;
-		var right = _leafOffset + finalFrame;
+		var left = _leafOffset + firstFrame / FramesPerBin;
+		var right = _leafOffset + (finalFrame + FramesPerBin - 1) / FramesPerBin;
 		while ( left < right )
 		{
 			if ( (left & 1) != 0 )

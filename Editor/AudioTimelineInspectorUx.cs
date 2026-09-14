@@ -14,7 +14,14 @@ internal static class AudioTimelineInspectorUx
 			&& propertyName == nameof( DestinationMarker.Id ) )
 			return false;
 
-		return selection switch
+		// Inline class editors can create an empty object while displaying a null value.
+		// Playlist creation must be an explicit authoring action.
+		if ( selection is AudioEvent audioEvent && propertyName == nameof( AudioEvent.MusicPlaylist ) && audioEvent.MusicPlaylist is null )
+			return false;
+
+		if(selection is AudioEvent && propertyName is nameof(AudioEvent.MasterTrack) or nameof(AudioEvent.Tracks))return false;
+        if(selection is AudioTrack track && ((propertyName==nameof(AudioTrack.Tone) && track.Tone is null) || (propertyName==nameof(AudioTrack.Overlay) && track.Overlay is null)))return false;
+        return selection switch
 		{
 			DestinationMarker => propertyName != nameof( DestinationMarker.Position ),
 			TransitionMarker => propertyName is not nameof( TransitionMarker.Position )

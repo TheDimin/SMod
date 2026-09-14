@@ -74,11 +74,16 @@ public enum TransitionQuantization
 {
 	Immediate,
 	NextBeat,
-	NextBar
+	NextBar,
+	NextPhrase
 }
 
 public sealed class TransitionRegion
 {
+    [Property, Range( 0f, 32f ), Description( "Fade before the selected beat. A late request shortens this fade to the remaining time." )]
+    public float FadeOutBeats { get; set; }
+    [Property, Range( 0f, 32f ), Description( "Fade after the jump, at the destination tempo." )]
+    public float FadeInBeats { get; set; }
 	[Property] public Guid Id { get; set; } = Guid.NewGuid();
 	[Property] public string Name { get; set; }
 	[Property] public TimelineTime Start { get; set; }
@@ -123,14 +128,30 @@ internal readonly record struct AudioTimelineEvaluationResult(
 internal sealed class AudioTimelineControlEvaluator
 {
 	private readonly AudioEvent _event;
+    private List<TransitionRegion> _regionStorage;
+    private List<TransitionRegion> _regions => _regionStorage ??= new(_event.TransitionRegions);
+    private TransitionRegion _musicTransition;
+    internal IReadOnlyList<TransitionRegion> Regions => _regions;
+    internal void SetMusicTransition(TransitionRegion region)
+    {
+        if(ReferenceEquals(region,_musicTransition)) return;
+        if(_musicTransition is not null)_regions.Remove(_musicTransition);
+        _musicTransition=region;
+        if(region is not null)_regions.Add(region);
+    }
 	private readonly Dictionary<Guid, long> _destinations = new();
 	private Guid _pendingRegion;
 	private long _pendingExecution = -1;
 	private long _previousSample;
+    private long _fadeOutStart;
+    private long _fadeInStart = -1;
+    private double _fadeInSamples;
+    public float TransitionGain { get; private set; } = 1f;
 
 	public AudioTimelineControlEvaluator( AudioEvent audioEvent )
 	{
 		_event = audioEvent;
+        _regionStorage = new(audioEvent.TransitionRegions);
 		foreach ( var marker in audioEvent.DestinationMarkers )
 			_destinations.Add( marker.Id, marker.Position.ToSamples( audioEvent.TimelineSampleRate ) );
 	}
@@ -141,7 +162,10 @@ internal sealed class AudioTimelineControlEvaluator
 	public void Reset( long sample )
 	{
 		_previousSample = sample;
-		_pendingRegion = Guid.Empty;
+        _fadeInStart = -1;
+        _fadeInSamples = 0;
+        TransitionGain = 1f;
+        _pendingRegion = Guid.Empty;
 		_pendingExecution = -1;
 	}
 
@@ -167,7 +191,15 @@ internal sealed class AudioTimelineControlEvaluator
 				return new AudioTimelineEvaluationResult( end, jumps, true, executedLoopRegionIds );
 			}
 
-			var overshoot = Math.Max( 0, end - decision.Value.ExecutionSample );
+			var transition = _regions.FirstOrDefault( x => x.Id == decision.Value.SourceId );
+            if ( transition is not null )
+            {
+                _fadeInStart = decision.Value.DestinationSample;
+                _fadeInSamples = transition.FadeInBeats * _event.SecondsPerBeatAt(
+                    (double)_fadeInStart / _event.TimelineSampleRate ) * _event.TimelineSampleRate;
+            }
+            else { _fadeInStart = -1; _fadeInSamples = 0; }
+            var overshoot = Math.Max( 0, end - decision.Value.ExecutionSample );
 			start = decision.Value.DestinationSample;
 			end = checked(start + overshoot);
 			jumps++;
@@ -177,8 +209,14 @@ internal sealed class AudioTimelineControlEvaluator
 			_pendingExecution = -1;
 		}
 
-		_previousSample = end;
-		return new AudioTimelineEvaluationResult( end, jumps, false, executedLoopRegionIds );
+		TransitionGain = 1f;
+        if ( _fadeInStart >= 0 && _fadeInSamples > 0 )
+            TransitionGain = (float)Math.Clamp( (end - _fadeInStart) / _fadeInSamples, 0d, 1d );
+        if ( _pendingRegion != Guid.Empty && _pendingExecution > _fadeOutStart && end >= _fadeOutStart )
+            TransitionGain = MathF.Min( TransitionGain, (float)Math.Clamp(
+                (double)(_pendingExecution - end) / (_pendingExecution - _fadeOutStart), 0d, 1d ) );
+        _previousSample = end;
+        return new AudioTimelineEvaluationResult( end, jumps, false, executedLoopRegionIds );
 	}
 
 	private TimelineDecision? FindDecision(
@@ -191,11 +229,11 @@ internal sealed class AudioTimelineControlEvaluator
 		if ( _pendingRegion != Guid.Empty )
 		{
 			TransitionRegion region = null;
-			for ( var i = 0; i < _event.TransitionRegions.Count; i++ )
+			for ( var i = 0; i < _regions.Count; i++ )
 			{
-				if ( _event.TransitionRegions[i].Id == _pendingRegion )
+				if ( _regions[i].Id == _pendingRegion )
 				{
-					region = _event.TransitionRegions[i];
+					region = _regions[i];
 					break;
 				}
 			}
@@ -206,7 +244,7 @@ internal sealed class AudioTimelineControlEvaluator
 				_pendingExecution = -1;
 			}
 			else if ( start <= scheduled && end >= scheduled )
-				return DestinationDecision( scheduled, region.DestinationMarkerId, region.Id );
+                return DestinationDecision( scheduled, region.DestinationMarkerId, region.Id );
 		}
 
 		TransitionMarker selectedMarker = null;
@@ -228,9 +266,10 @@ internal sealed class AudioTimelineControlEvaluator
 			return DestinationDecision( selectedMarkerSample, selectedMarker.DestinationMarkerId, selectedMarker.Id );
 
 		TransitionRegion selectedRegion = null;
-		for ( var i = 0; i < _event.TransitionRegions.Count; i++ )
+		for ( var i = 0; i < _regions.Count; i++ )
 		{
-			var candidate = _event.TransitionRegions[i];
+			var candidate = _regions[i];
+            if ( _pendingRegion != Guid.Empty ) continue;
 			if ( end < candidate.Start.ToSamples( _event.TimelineSampleRate )
 				|| start >= candidate.End.ToSamples( _event.TimelineSampleRate )
 				|| !Matches( candidate.Conditions, parameters ) )
@@ -240,16 +279,20 @@ internal sealed class AudioTimelineControlEvaluator
 		}
 		if ( selectedRegion is not null )
 		{
-			var execution = Quantize( Math.Max( start, selectedRegion.Start.ToSamples( _event.TimelineSampleRate ) ), selectedRegion.Quantization );
+			var requestSample = Math.Max( start, selectedRegion.Start.ToSamples( _event.TimelineSampleRate ) );
+            var execution = Quantize( requestSample, selectedRegion.Quantization );
 			if ( execution > end )
 			{
-				if ( execution < selectedRegion.End.ToSamples( _event.TimelineSampleRate ) )
+				if ( execution <= selectedRegion.End.ToSamples( _event.TimelineSampleRate ) )
 				{
 					_pendingRegion = selectedRegion.Id;
 					_pendingExecution = execution;
+                    var fadeSamples = selectedRegion.FadeOutBeats * _event.SecondsPerBeatAt(
+                        (double)requestSample / _event.TimelineSampleRate ) * _event.TimelineSampleRate;
+                    _fadeOutStart = Math.Max( requestSample, execution - (long)Math.Round( fadeSamples ) );
 				}
 			}
-			else if ( execution < selectedRegion.End.ToSamples( _event.TimelineSampleRate ) )
+			else if ( execution <= selectedRegion.End.ToSamples( _event.TimelineSampleRate ) )
 				return DestinationDecision( execution, selectedRegion.DestinationMarkerId, selectedRegion.Id );
 		}
 
@@ -283,12 +326,20 @@ internal sealed class AudioTimelineControlEvaluator
 	{
 		if ( quantization == TransitionQuantization.Immediate )
 			return sample;
-		var samplesPerBeat = 60d * _event.TimelineSampleRate / _event.TempoMap.BeatsPerMinute;
-		var quantum = quantization == TransitionQuantization.NextBar ? samplesPerBeat * _event.TempoMap.BeatsPerBar : samplesPerBeat;
-		return checked((long)Math.Round( (Math.Floor( sample / quantum ) + 1d) * quantum, MidpointRounding.AwayFromZero ));
+		var grid = _event.BeatGridAt( (double)sample / _event.TimelineSampleRate );
+        var samplesPerBeat = _event.SecondsPerBeatAt( (double)sample / _event.TimelineSampleRate ) * _event.TimelineSampleRate;
+        var beatsPerBar = grid?.BeatsPerBar ?? _event.TempoMap.BeatsPerBar;
+        var quantum = samplesPerBeat * (quantization switch {
+            TransitionQuantization.NextBar => beatsPerBar,
+            TransitionQuantization.NextPhrase => beatsPerBar * (grid?.BarsPerPhrase ?? 4),
+            _ => 1 });
+        var origin = grid?.Start.ToSamples( _event.TimelineSampleRate ) ?? 0;
+        // Sample rounding must not turn a beat boundary into the previous beat.
+        return checked(origin + (long)Math.Round(
+            (Math.Floor( (sample - origin + .5d) / quantum ) + 1d) * quantum, MidpointRounding.AwayFromZero ));
 	}
 
-	private static bool Matches( ParameterConditionSet set, IReadOnlyDictionary<AudioParameter, AudioParameterValue> parameters )
+	internal static bool Matches( ParameterConditionSet set, IReadOnlyDictionary<AudioParameter, AudioParameterValue> parameters )
 	{
 		if ( set?.Conditions is null || set.Conditions.Count == 0 )
 			return true;

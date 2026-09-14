@@ -61,7 +61,13 @@ internal static class AudioInstrumentBlockRenderer
 		}
 
 		DrawHeader( rect, instrument, preview.Variations.Count, state );
-		DrawVariationLanes( rect, clipRect, instrument, preview, state, audible );
+		if ( instrument.IsSubEvent )
+		{
+			Paint.SetPen( Theme.TextLight );
+			Paint.SetDefaultFont( 8f );
+			Paint.DrawText( new Rect( 7f, 21f, MathF.Max( 8f, rect.Width - 14f ), 16f ), $"{(instrument.RotateSubEventsAtEnd ? "PARENT LOOP" : "SUB-GRAPH")} | {instrument.SubEvents.Count} choices | {instrument.SubEventSelection}", TextFlag.LeftCenter | TextFlag.SingleLine );
+		}
+		else DrawVariationLanes( rect, clipRect, instrument, preview, state, audible );
 	}
 
 	public static void DrawOverlay(
@@ -84,7 +90,7 @@ internal static class AudioInstrumentBlockRenderer
 		}
 
 		DrawFadeEnvelope( rect, instrument, preview, audible, hovered || selected );
-		DrawPlaybackPosition( rect, instrument, preview, state, audible );
+		if ( !instrument.IsSubEvent ) DrawPlaybackPosition( rect, instrument, preview, state, audible );
 	}
 
 	private static void DrawFadeEnvelope(
@@ -98,6 +104,7 @@ internal static class AudioInstrumentBlockRenderer
 			.Select( variation => TrimmedDuration( instrument, variation.Duration ) )
 			.DefaultIfEmpty( 0.01f )
 			.Max();
+		if ( instrument.IsSubEvent ) duration = AudioTimelineView.EstimateDuration( instrument );
 		var fadeInX = (instrument.FadeInDuration / duration * rect.Width).Clamp( 0f, rect.Width );
 		var fadeOutX = rect.Width - (instrument.FadeOutDuration / duration * rect.Width).Clamp( 0f, rect.Width );
 		if ( instrument.FadeInDuration > 0f )

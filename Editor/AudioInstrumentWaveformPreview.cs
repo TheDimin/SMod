@@ -38,15 +38,8 @@ internal sealed class AudioInstrumentWaveformPreview
 			for ( var index = 0; index < tracks.Length; index++ )
 			{
 				var file = tracks[index].Sound;
-				var samples = Array.Empty<short>();
-				var channels = 1;
-				var sourceDuration = 0.1f;
-				if ( file.IsValid() && await file.LoadAsync() )
-				{
-					samples = await file.GetSamplesInterleavedAsync() ?? Array.Empty<short>();
-					channels = Math.Max( 1, file.Channels );
-					sourceDuration = MathF.Max( 0.1f, file.Duration );
-				}
+				var waveform = await AudioWaveformSourceCache.LoadAsync( file );
+				var sourceDuration = waveform.Duration;
 				var offset = MathF.Min( MathF.Max( 0f, tracks[index].Offset ), sourceDuration );
 				var duration = tracks[index].Length > 0f
 					? MathF.Min( tracks[index].Length, sourceDuration - offset )
@@ -55,7 +48,7 @@ internal sealed class AudioInstrumentWaveformPreview
 					index,
 					tracks[index],
 					file,
-					AudioWaveformEnvelope.Create( samples, channels ),
+					waveform.Envelope,
 					sourceDuration,
 					offset,
 					MathF.Max( 0.01f, duration ) ) );

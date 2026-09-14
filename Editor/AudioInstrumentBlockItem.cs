@@ -17,7 +17,7 @@ internal sealed class AudioInstrumentBlockItem : GraphicsItem
 
 	private readonly AudioTimelineView _view;
 	private readonly AudioInstrumentWaveformPreview _waveformPreview;
-	private readonly List<Pixmap> _staticTiles = new();
+	private readonly Dictionary<int, Pixmap> _staticTiles = new();
 	private AudioTrack _track;
 	private int _trackIndex;
 	private int _dragTargetTrackIndex;
@@ -60,14 +60,49 @@ internal sealed class AudioInstrumentBlockItem : GraphicsItem
 		_ = _waveformPreview.LoadAsync();
 	}
 
+	private Guid previewChildId;
+	private string previewChildEvent;
+	internal void OpenActiveChild()
+	{
+		var id = liveState?.ChildInstanceId ?? previewChildId;
+		var path = liveState?.ChildEvent ?? previewChildEvent;
+		if ( string.IsNullOrWhiteSpace( path ) ) path = Instrument.SubEvents?.FirstOrDefault()?.Event?.ResourcePath;
+		if ( !string.IsNullOrWhiteSpace( path ) ) AudioEventEditorWindow.OpenChildEvent( path, id );
+	}
+
 	public void SetPlaybackState( AudioInstrumentPlaybackState? state )
 	{
+		previewChildId = state?.ChildInstanceId ?? Guid.Empty;
+		previewChildEvent = state?.ChildEvent;
 		var next = AudioInstrumentVisualState.FromPlayback( state );
 		if ( _visualState == next )
 			return;
 		_visualState = next;
 		Update();
 	}
+
+    private AudioLiveVoice liveState;
+    public AudioLiveVoice SetLiveStates(IReadOnlyList<AudioLiveVoice> states)
+    {
+        var selected=states.OrderByDescending(x=>x.State=="Playing").ThenBy(x=>x.IsReleaseTail).ThenByDescending(x=>x.Start).FirstOrDefault();
+        var aggregate=selected is null ? null : selected with {Gain=states.Sum(x=>Math.Max(0,x.Gain))};
+        SetLiveState(aggregate);
+        if(states.Count>1)
+            ToolTip=$"{selected.Track} | {states.Count} overlapping voices\nSum of voice gains: {aggregate.Gain:0.####}. Not measured output loudness.\n"
+                +string.Join("\n",states.Select(x=>$"{(x.IsReleaseTail ? "Tail" : "Body")} | {x.State} | Gain {x.Gain:0.####} | Source {x.SourcePosition:0.000}s | {x.Source}"));
+        else if(selected?.IsReleaseTail==true)ToolTip+="\nRetained release tail";
+        return selected;
+    }
+    public void SetLiveState(AudioLiveVoice state)
+    {
+        liveState=state;
+        if(state is null) {ToolTip=AudioTimelineView.InstrumentDescription(Instrument);SetPlaybackState(null);Update();return;}
+        var source=Instrument.Sound?.Tracks.FirstOrDefault(x=>x.Sound?.ResourcePath==state.Source);
+        SetPlaybackState(new AudioInstrumentPlaybackState(Track,Instrument,state.State is "Playing" or "Silent" or "Paused",state.State=="Scheduled",state.State=="Paused",state.SourcePosition,source,source?.Sound,state.ChildInstanceId,state.ChildEvent));
+        var decibels=state.Gain>0 ? $"{20f*MathF.Log10(state.Gain):0.0} dB" : "silent";
+        ToolTip=$"{state.Track} | {state.State}\nVoice gain (before mixer): {state.Gain:0.####} ({decibels}) | Pitch: {state.Pitch:0.###} | Source time: {state.SourcePosition:0.000}s\nFill scale: -60 to 0 dB gain. Not measured output loudness.\n{state.Source}";
+        Update();
+    }
 
 	public void SetTrack( AudioTrack track, int trackIndex )
 	{
@@ -104,6 +139,7 @@ internal sealed class AudioInstrumentBlockItem : GraphicsItem
 
 	protected override void OnMousePressed( GraphicsMouseEvent e )
 	{
+        if(liveState is not null) {_view.SelectInstrument(Instrument);e.Accepted=true;return;}
 		if ( e.LeftMouseButton )
 		{
 			_curveEdge = HitCurvePoint( e.LocalPosition );
@@ -139,7 +175,7 @@ internal sealed class AudioInstrumentBlockItem : GraphicsItem
 				_trimBefore = _view.CaptureEventState();
 				_trimDragSceneX = e.ScenePosition.x;
 				_trimOriginalStart = Instrument.TrimStart;
-				_trimSourceDuration = MathF.Max( 0.01f, _waveformPreview.Duration );
+				_trimSourceDuration = Instrument.IsSubEvent ? AudioTimelineView.EstimateDuration( Instrument ) + Instrument.TrimStart : MathF.Max( 0.01f, _waveformPreview.Duration );
 				_trimOriginalEnd = Instrument.TrimEnd > 0f ? MathF.Min( Instrument.TrimEnd, _trimSourceDuration ) : _trimSourceDuration;
 				Movable = false;
 				_view.SelectInstrument( Instrument );
@@ -297,14 +333,19 @@ internal sealed class AudioInstrumentBlockItem : GraphicsItem
 		var key = CreateStaticCacheKey( hovered, selected );
 		EnsureStaticCache( key );
 
-		var tileLeft = 0f;
-		foreach ( var tile in _staticTiles )
+		foreach ( var pair in _staticTiles )
 		{
-			var tileRect = new Rect( tileLeft, 0f, tile.Width, tile.Height );
-			Paint.Draw( tileRect, tile );
-			tileLeft += tile.Width;
+			var tile = pair.Value;
+			Paint.Draw( new Rect( pair.Key * StaticTileWidth, 0f, tile.Width, tile.Height ), tile );
 		}
 
+		DrawLiveGainLayer();
+		if ( Instrument.IsSubEvent && (liveState?.ChildEvent ?? previewChildEvent) is { } childPath )
+		{
+			Paint.SetPen( Theme.Text );
+			Paint.SetDefaultFont( 8f, 600 );
+			Paint.DrawText( new Rect( 7f, 36f, MathF.Max( 8f, Width - 14f ), 18f ), $"Active: {System.IO.Path.GetFileNameWithoutExtension( childPath )}", TextFlag.LeftCenter | TextFlag.SingleLine );
+		}
 		AudioInstrumentBlockRenderer.DrawOverlay(
 			LocalRect,
 			Instrument,
@@ -313,7 +354,25 @@ internal sealed class AudioInstrumentBlockItem : GraphicsItem
 			_audible,
 			hovered,
 			selected );
+
 	}
+
+    private void DrawLiveGainLayer()
+    {
+        if(liveState is null || Width<=6 || Height<=24)return;
+        // A dB scale keeps quiet stem gains legible. Never present this as an audio peak meter.
+        var gain=liveState.State=="Playing" && float.IsFinite(liveState.Gain) ? Math.Max(0,liveState.Gain) : 0;
+        var fill=gain>0 ? Math.Clamp((20f*MathF.Log10(gain)+60f)/60f,0,1) : 0;
+        var body=new Rect(3,21,Width-6,Height-24);
+        Paint.ClearPen();Paint.SetBrush(Color.Black.WithAlpha(.18f));Paint.DrawRect(body);
+        if(fill<=0)return;
+        var color=gain>1 ? Theme.Yellow : Theme.Green;
+        var height=body.Height*fill;
+        var top=body.Top+body.Height-height;
+        Paint.SetBrush(color.WithAlpha(.24f));Paint.DrawRect(new Rect(body.Left,top,body.Width,height));
+        Paint.SetPen(color.WithAlpha(.85f),1f);
+        Paint.DrawLine(new Vector2(body.Left,top),new Vector2(body.Right,top));
+    }
 
 	private void OnWaveformsLoaded()
 	{
@@ -331,7 +390,7 @@ internal sealed class AudioInstrumentBlockItem : GraphicsItem
 			AudioTimelineView.InstrumentName( Instrument ),
 			Instrument.Conditions?.Count ?? 0,
 			Instrument.Automations?.Count ?? 0,
-			ReferenceSignature( Instrument.Sound ) );
+			HashCode.Combine( ReferenceSignature( Instrument.Sound ), Instrument.SubEvents?.Count ?? 0 ) );
 		var selectedVariationSignature = HashCode.Combine(
 			ReferenceSignature( _visualState.SelectedTrack ),
 			ReferenceSignature( _visualState.SelectedSound ) );
@@ -368,15 +427,28 @@ internal sealed class AudioInstrumentBlockItem : GraphicsItem
 			selected );
 	}
 
+ internal long CheckStaticTiles()
+ {
+  EnsureStaticCache(CreateStaticCacheKey(false,false));
+  return _staticTiles.Values.Sum(tile=>(long)tile.Width*tile.Height*4);
+ }
+
 	private void EnsureStaticCache( AudioInstrumentRenderCacheKey key )
 	{
-		if ( _staticCacheKey == key )
-			return;
-
-		_staticCacheKey = key;
-		_staticTiles.Clear();
-		for ( var tileLeft = 0; tileLeft < key.Width; tileLeft += StaticTileWidth )
+		if ( _staticCacheKey != key )
 		{
+			_staticCacheKey = key;
+			_staticTiles.Clear();
+		}
+        var left = _view.ToScene(_view.ContentRect.TopLeft).x - Position.x;
+        var right = _view.ToScene(_view.ContentRect.BottomRight).x - Position.x;
+        var range = AudioVisibleTileRange.ForViewport(key.Width, left, right, StaticTileWidth);
+        foreach(var index in _staticTiles.Keys.ToArray())
+            if(index < range.First || index >= range.End)_staticTiles.Remove(index);
+		for ( var index = range.First; index < range.End; index++ )
+		{
+            if(_staticTiles.ContainsKey(index))continue;
+            var tileLeft = index * StaticTileWidth;
 			var tileWidth = Math.Min( StaticTileWidth, key.Width - tileLeft );
 			var tile = new Pixmap( tileWidth, key.Height );
 			tile.Clear( Color.Transparent );
@@ -391,7 +463,7 @@ internal sealed class AudioInstrumentBlockItem : GraphicsItem
 					_visualState,
 					_audible );
 			}
-			_staticTiles.Add( tile );
+			_staticTiles.Add( index, tile );
 		}
 	}
 

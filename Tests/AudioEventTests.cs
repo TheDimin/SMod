@@ -4,7 +4,7 @@ using System.Threading.Tasks;
 using Smod;
 
 [TestClass]
-public sealed class AudioEventTests
+public sealed partial class AudioEventTests
 {
 	private FakeAudioBackend _backend;
 	private FakeAudioTimelineScheduler _timeline;
@@ -23,6 +23,21 @@ public sealed class AudioEventTests
 	{
 		AudioSystem.ResetBackendForTesting();
 	}
+
+    [TestMethod]
+    public void Playback_PreparesAllConcurrentVoicesBeforeStartingAnyStem()
+    {
+        var e=CreateEvent();
+        e.MasterTrack.Instruments.Add(new AudioInstrument {Sound=CreateSoundEvent()});
+        e.MasterTrack.Instruments.Add(new AudioInstrument {Sound=CreateSoundEvent()});
+        var heardEarly=false;
+        _backend.BeforePlay=()=>heardEarly |= _backend.Voices.Any(v=>v.IsPlaying && !v.Paused);
+        var instance=AudioSystem.GetEvent(e).CreateInstance();instance.Start();
+        Assert.IsFalse(heardEarly,"An earlier stem played while a later stem was still being created.");
+        Assert.AreEqual(3,_backend.Voices.Count);
+        Assert.IsTrue(_backend.Voices.All(v=>!v.Paused));
+        instance.Stop(AudioStopMode.Immediate);
+    }
 
 	[TestMethod]
 	public void Validation_RejectsAnEventWithoutInstruments()
@@ -1829,9 +1844,11 @@ public sealed class AudioEventTests
 	{
 		public List<FakeAudioVoice> Voices { get; } = new();
 		public SoundFile NextSelectedSound { get; set; }
+        public Action BeforePlay { get; set; }
 
 		public IAudioVoice Play( SoundEvent sound, Audio3DAttributes attributes, bool listenLocal )
 		{
+			BeforePlay?.Invoke();
 			var voice = new FakeAudioVoice
 			{
 				Sound = sound,

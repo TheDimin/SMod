@@ -3,6 +3,12 @@ namespace Smod;
 [AssetType( Name = "Audio Event", Extension = "audevt", Category = "Audio", Flags = AssetTypeFlags.NoEmbedding )]
 public sealed partial class AudioEvent : GameResource
 {
+	[Property, Title( "Sustain Until Stopped" ), Description( "Keep this retained process event active without playing voices. Its owner must stop it before release, including on cancellation or scene cleanup." )]
+	public bool SustainUntilStopped { get; set; }
+
+	[Property, Title("Shared Music Output"), Description("Use one sample clock for continuous backing, short timeline clips, and action overlays. Requires one grid from zero and a full-song loop. Enable only after validating the shared event path.")]
+	public bool SharedMusicOutput { get; set; }
+
 	[Property]
 	public bool UI { get; set; }
 
@@ -93,6 +99,13 @@ public sealed partial class AudioEvent : GameResource
 
 public sealed class AudioTrack
 {
+	[Property, Hide] public Guid Id { get; set; } = Guid.NewGuid();
+
+ [Property] public AudioTransitionRole TransitionRole {get;set;}
+	[Property, InlineEditor, System.Diagnostics.CodeAnalysis.AllowNull] public AudioTone Tone { get; set; }
+    [Property, InlineEditor, System.Diagnostics.CodeAnalysis.AllowNull] public AudioOverlayRule Overlay {get;set;}
+    [Property] public bool MusicLead { get; set; }
+    [Property] public List<float> MusicVariationGains { get; set; } = new();
 	[Property, Hide, Range( 72f, 320f )]
 	public float TimelineHeight { get; set; } = 72f;
 
@@ -117,6 +130,27 @@ public sealed class AudioTrack
 
 public sealed class AudioInstrument
 {
+	[Property, Hide] public Guid Id { get; set; } = Guid.NewGuid();
+
+	[Property, Title( "Name" )] public string Name { get; set; }
+	[Property, InlineEditor, Title( "Sub-graph Choices" ), Description( "Use child Audio Events instead of a Sound Event. One eligible child is retained until this instrument ends or its choice becomes ineligible. Matching parent parameters are inherited while active." )]
+	public List<AudioSubEventChoice> SubEvents { get; set; } = new();
+	[Property, Title( "Sub-graph Selection" )]
+	public SoundTrackSelectionMode SubEventSelection { get; set; } = SoundTrackSelectionMode.RandomExclusive;
+	[Property, Title( "Sub-graph Change Boundary" ), Description( "When the selected child becomes ineligible, switch on this boundary of its own beat grid. Initial playback starts immediately. A missing grid switches immediately." )]
+	public TransitionQuantization SubEventQuantization { get; set; } = TransitionQuantization.Immediate;
+	[Property, Title("Loop Sub-graph Selection"), Description("The parent repeats this instrument at each full song end and selects another eligible child. A single eligible child repeats. Children cannot select siblings or change the parent timeline.")] public bool RotateSubEventsAtEnd { get; set; }
+ [Property, Range(0,16)] public float SubEventTransitionBeats {get;set;}
+	[System.Text.Json.Serialization.JsonIgnore] public bool IsSubEvent => SubEvents?.Count > 0;
+
+    [Property] public List<int> OverlayBars {get;set;} = new();
+    [Property, Range(0,300), Description("Shared phrase body length in seconds. Zero reserves the full trim. A shorter body permits one following phrase while the retained source tail finishes. Trim End still includes the tail. Requires a shared-output overlay.")]
+    public float OverlayBodySeconds {get;set;}
+
+    [Property, Range(0,64), Title("Shared Music Wait (Beats)"), Description("Maximum shared-clock wait from request to phrase entry. Zero allows any future entry. Source loading uses this same budget; paused music does not consume it.")]
+    public int MaximumMusicWaitBeats {get;set;}
+
+
 	[Property, Title( "Sound Event" )]
 	public SoundEventResource Sound { get; set; }
 
@@ -284,6 +318,8 @@ public enum AudioAutomationTarget
 
 public sealed class AudioAutomation
 {
+	[Property, Hide] public Guid Id { get; set; } = Guid.NewGuid();
+
 	[Property]
 	public AudioParameter Parameter { get; set; }
 
@@ -320,6 +356,8 @@ public sealed class AudioAutomation
 
 public sealed class AudioAutomationPoint
 {
+	[Property, Hide] public Guid Id { get; set; } = Guid.NewGuid();
+
 	[Property]
 	public float Input { get; set; }
 

@@ -8,6 +8,27 @@ namespace Editor.Mcp;
 [McpToolset( "audio", "Inspect and validate authored AudioEvent resources." )]
 public static class AudioMcpTools
 {
+	/// <summary>Open or focus an Audio Event editor and measure a warm waveform UI rebuild. Preserves unsaved values and writes no assets.</summary>
+	[McpTool( "check_waveform_reload" )]
+	public static async Task<object> CheckWaveformReload( string resourcePath )
+	{
+		var asset = AssetSystem.FindByPath( resourcePath );
+		if ( asset is null || !IAssetEditor.OpenInEditor( asset, out var editor ) || editor is not AudioEventEditorWindow window )
+			throw new ArgumentException( "An Audio Event editor asset is required." );
+		return await window.CheckWaveformReloadAsync();
+	}
+
+    /// <summary>Reload one saved Smod resource into its cached editor object. Use after creating dependencies when compilation alone leaves defaults cached. Replaces unsaved in-memory values for this resource only; writes no file. Validate the parent event afterward.</summary>
+    [McpTool("reload_saved_audio_resource")]
+    public static object ReloadSaved(string resourcePath)
+    {
+        var asset=AssetSystem.FindByPath(resourcePath);
+        var resource=asset?.LoadResource() as Sandbox.GameResource;
+        if(resource is not (AudioEvent or AudioParameter or SoundEventResource))throw new ArgumentException("A Smod resource is required.");
+        resource.LoadFromJson(System.IO.File.ReadAllText(asset.AbsolutePath));
+        return new {Path=asset.RelativePath,Reloaded=true};
+    }
+
 	/// <summary>Detects silence-separated regions in one sound file using the same analysis as the AudioEventEditor slicer.</summary>
 	[McpTool.ReadOnly( "detect_sound_slices" )]
 	public static async Task<object> DetectSoundSlices(
@@ -97,6 +118,7 @@ public static class AudioMcpTools
 			isValid = validation.IsValid,
 			derivedDuration = tracks.Select( track => track.Duration ).DefaultIfEmpty().Max(),
 			fadeOutDuration = audioEvent.FadeOutDuration,
+			sustainUntilStopped = audioEvent.SustainUntilStopped,
 			playback = new
 			{
 				audioEvent.UI,
@@ -111,7 +133,10 @@ public static class AudioMcpTools
 			timelineSampleRate = audioEvent.TimelineSampleRate,
 			timelineDuration = audioEvent.TimelineDuration,
 			tempo = new { audioEvent.TempoMap?.BeatsPerMinute, audioEvent.TempoMap?.BeatsPerBar },
-			destinationMarkers = audioEvent.DestinationMarkers?.Select( marker => new
+			beatGrids = audioEvent.BeatGrids?.Select( grid => new {
+                grid.Name, startSeconds = grid.Start.Seconds, endSeconds = grid.End.Seconds,
+                grid.BeatsPerMinute, grid.BeatsPerBar, grid.BarsPerPhrase } ).ToArray(),
+            destinationMarkers = audioEvent.DestinationMarkers?.Select( marker => new
 			{
 				marker.Id,
 				marker.Name,
@@ -138,6 +163,7 @@ public static class AudioMcpTools
 				endSeconds = region.End.Seconds,
 				region.DestinationMarkerId,
 				quantization = region.Quantization.ToString(),
+                region.FadeOutBeats, region.FadeInBeats,
 				region.Priority,
 				conditionCount = region.Conditions?.Conditions?.Count ?? 0
 			} ).ToArray(),
@@ -175,11 +201,18 @@ public static class AudioMcpTools
 				instrument.StartTime,
 				instrument.TrimStart,
 				instrument.TrimEnd,
+                instrument.MaximumMusicWaitBeats,
+                instrument.OverlayBars?.ToArray() ?? Array.Empty<int>(),
 				duration,
 				instrument.StartTime + duration,
-				instrument.Sound?.Tracks?.Count ?? 0,
+				instrument.IsSubEvent ? instrument.SubEvents.Count : instrument.Sound?.Tracks?.Count ?? 0,
 				instrument.Conditions?.Where( condition => condition is not null ).Select( condition => new InspectedCondition( condition.Parameter?.Name, condition.Parameter?.ResourcePath, condition.Invert, condition.Minimum, condition.Maximum, condition.Label ) ).ToArray() ?? Array.Empty<InspectedCondition>(),
-				instrument.Automations?.Where( automation => automation is not null ).Select( InspectAutomation ).ToArray() ?? Array.Empty<InspectedAutomation>() );
+				instrument.Automations?.Where( automation => automation is not null ).Select( InspectAutomation ).ToArray() ?? Array.Empty<InspectedAutomation>(),
+				instrument.SubEventSelection.ToString(),
+				instrument.SubEventQuantization.ToString(),
+                instrument.RotateSubEventsAtEnd, instrument.SubEventTransitionBeats,
+				instrument.SubEvents?.Select( choice => new InspectedSubEvent( choice?.Event?.ResourcePath,
+					choice?.Conditions?.Select( condition => new InspectedCondition( condition.Parameter?.Name, condition.Parameter?.ResourcePath, condition.Invert, condition.Minimum, condition.Maximum, condition.Label ) ).ToArray() ?? Array.Empty<InspectedCondition>() ) ).ToArray() ?? Array.Empty<InspectedSubEvent>() );
 		}).ToArray() ?? Array.Empty<InspectedInstrument>();
 
 		return new InspectedTrack(
@@ -204,6 +237,7 @@ public static class AudioMcpTools
 
 	private static float EstimateDuration( AudioInstrument instrument )
 	{
+		if ( instrument?.IsSubEvent == true ) return AudioTimelineView.EstimateDuration( instrument );
 		var sound = instrument?.Sound;
 		if ( sound?.Tracks is null || sound.Tracks.Count == 0 )
 			return 0f;
@@ -243,12 +277,15 @@ public static class AudioMcpTools
 		float StartTime,
 		float TrimStart,
 		float TrimEnd,
+        int MaximumMusicWaitBeats,
+        int[] OverlayBars,
 		float Duration,
 		float EndTime,
 		int VariationCount,
 		InspectedCondition[] Conditions,
-		InspectedAutomation[] Automations );
+		InspectedAutomation[] Automations, string SubEventSelection, string SubEventQuantization, bool RotateSubEventsAtEnd, float SubEventTransitionBeats, InspectedSubEvent[] SubEvents );
 
+	private sealed record InspectedSubEvent( string Event, InspectedCondition[] Conditions );
 	private sealed record InspectedCondition( string Parameter, string ParameterResource, bool Invert, float Minimum, float Maximum, string Label );
 	private sealed record InspectedAutomation( string Parameter, string ParameterResource, string Target, InspectedAutomationPoint[] Points );
 	private sealed record InspectedAutomationPoint( float Input, float Output );
