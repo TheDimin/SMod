@@ -13,7 +13,6 @@ public sealed partial class AudioEventEditorWindow
   GameResource copy=resource switch
   {
    AudioEvent => new AudioEvent(),
-   SoundEventResource => new SoundEventResource(),
    AudioParameter => new AudioParameter(),
    _ => throw new InvalidOperationException("Unsupported audio resource: "+resource.ResourcePath)
   };

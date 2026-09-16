@@ -6,14 +6,16 @@ namespace Smod;
 
 public static partial class AudioMusicOutputNativeCheck
 {
- static (SoundEventResource Source,AudioParameter Trigger,AudioInstrument Clip) TailFixture(AudioEvent resource)
+ static (AudioSourceDefinition Source,AudioParameter Trigger,AudioInstrument Clip) TailFixture(AudioEvent resource)
  {
-  var source=resource.Tracks.First(t=>t.Overlay?.VoiceGroup=="drum-fills").Instruments[0].Sound;
+  var sourceInstrument=resource.Tracks.First(t=>t.Overlay?.VoiceGroup=="drum-fills").Instruments[0];
+  var source=resource.Sources?.SingleOrDefault(candidate=>candidate?.Id==sourceInstrument.SourceId)
+   ?? throw new InvalidOperationException("The tail fixture needs a graph-owned source.");
   var grid=resource.BeatGrids.First();var beat=(float)grid.SecondsPerBeat;
   resource.Tracks.RemoveAll(t=>t.Overlay?.Enabled==true);
   foreach(var track in resource.Tracks)track.Volume=0;
   var trigger=new AudioParameter{Name="TailCheck",Type=AudioParameterType.Discrete,Minimum=0,Maximum=10};resource.Parameters.Add(trigger);
-  var clip=new AudioInstrument{Sound=source,TrimStart=24,TrimEnd=24+beat*3,OverlayBodySeconds=beat};
+  var clip=new AudioInstrument{SourceId=source.Id,TrimStart=24,TrimEnd=24+beat*3,OverlayBodySeconds=beat};
   var phraseTrack=new AudioTrack{Name="Tail check",Volume=.1f,Instruments=new(){clip},
    Overlay=new(){Enabled=true,TriggerParameter=trigger,BeatGridName=grid.Name,BeatsPerMinute=grid.BeatsPerMinute,QuantizationBeats=1,CooldownBeats=1,Volume=1}};
   resource.Tracks.Add(phraseTrack);resource.SharedMusicOutput=true;AudioEventValidator.Validate(resource).AssertValid();

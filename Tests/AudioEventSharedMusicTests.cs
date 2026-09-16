@@ -9,6 +9,60 @@ public sealed partial class AudioEventTests
   e.LoopRegions.Add(new(){Name="Full song",End=new(2.4)});
   return e;
  }
+ [TestMethod] public void SharedEvent_DelayedUpdateFoldsCompleteLoopsWithoutJumpLimit()
+ {
+  var session=new EventMusicSessionFake();session.Loaded.SetResult(true);
+  var instance=AudioSystem.GetEvent(SharedSong()).CreateInstance();instance.SharedMusicSessionFactory=()=>session;
+  try
+  {
+   instance.Start();session.Position=105840L*20+22050;
+   Assert.AreEqual(.5f,instance.TimelinePosition,.00001f);
+   Assert.AreEqual(.5f,instance.CaptureSharedMusicMix().Position,.00001f);
+   Assert.AreEqual(0,session.SeekCalls,"Catch-up must not restart the audio clock.");
+   session.Position+=22050;Assert.AreEqual(1f,instance.TimelinePosition,.00001f);
+  }
+  finally {instance.Stop(AudioStopMode.Immediate);instance.Release();}
+ }
+ [TestMethod] public void SharedEvent_RepeatedExactLoopBoundariesKeepMixPositionNonnegative()
+ {
+  var session=new EventMusicSessionFake();session.Loaded.SetResult(true);
+  var instance=AudioSystem.GetEvent(SharedSong()).CreateInstance();instance.SharedMusicSessionFactory=()=>session;
+  try
+  {
+   instance.Start();
+   for(var loop=1;loop<=100;loop++)
+   {
+    session.Position=105840L*loop;
+    Assert.AreEqual(0f,instance.TimelinePosition,.00001f);
+    Assert.AreEqual(0f,instance.CaptureSharedMusicMix().Position,.00001f);
+   }
+  }
+  finally {instance.Stop(AudioStopMode.Immediate);instance.Release();}
+ }
+ [TestMethod] public void SharedChild_ResumeEntryIsSilentWhileItsClockStillStartsAtZero()
+ {
+  Assert.AreEqual(0f,AudioMusicalHandoff.Gain(AudioTransitionRole.Backing,-14,.15f,0,0));
+  Assert.AreEqual(0f,AudioMusicalHandoff.Gain(AudioTransitionRole.Lead,-14,.15f,0,0));
+ }
+ [TestMethod] public void SharedChild_OptInResumeReturnsToSavedServicePosition()
+ {
+  var phase=new AudioParameter{Name="Phase",Minimum=0,Maximum=1};
+  var parent=Nested(SharedRotationSong());parent.Parameters.Add(phase);
+  var choice=parent.MasterTrack.Instruments[0].SubEvents[0];choice.ResumePlayback=true;choice.Conditions.Add(new(){Parameter=phase,Minimum=0,Maximum=0});
+  parent.MasterTrack.Instruments[0].SubEvents.Add(new(){Event=SharedRotationSong(),Conditions=new(){new(){Parameter=phase,Minimum=1,Maximum=1}}});
+  var sessions=new[]{new EventMusicSessionFake(),new EventMusicSessionFake(),new EventMusicSessionFake()};
+  foreach(var session in sessions)session.Loaded.SetResult(true);
+  var next=0;var instance=AudioSystem.GetEvent(parent).CreateInstance();instance.SharedMusicSessionFactory=()=>sessions[next++];
+  try
+  {
+   instance.Start();sessions[0].Position=441000;
+   instance.SetParameterByName("Phase",1);Assert.AreEqual(1,sessions[0].Disposals);
+   instance.SetParameterByName("Phase",0);
+   Assert.AreEqual(441000L,sessions[2].Position,"The next service phase must not replay the song opening.");
+   Assert.IsFalse(sessions[2].Paused);
+  }
+  finally {instance.Stop(AudioStopMode.Immediate);instance.Release();}
+ }
  [TestMethod] public void SharedEvent_OwnsLoadingClockPauseFactsMuteAndImmediateStop()
  {
   var e=SharedSong();var fact=new AudioParameter{Name="Pressure",Minimum=0,Maximum=1};e.Parameters.Add(fact);
@@ -71,14 +125,18 @@ public sealed partial class AudioEventTests
   }
   finally {instance.Stop(AudioStopMode.Immediate);instance.Release();}
  }
- [TestMethod] public void SharedChild_PhaseChangeWaitsForPreparationThenForTheChildClock()
+ [TestMethod]
+ [DataRow(false)]
+ [DataRow(true)]
+ public void SharedChild_PhaseChangeWaitsForPreparationThenForTheChildClock(bool entryOverride)
  {
   var phase=new AudioParameter{Name="Phase",Minimum=0,Maximum=1};
   var a=SharedSong();var b=SharedSong();var parent=Nested(a);parent.Parameters.Add(phase);
-  var instrument=parent.MasterTrack.Instruments[0];instrument.SubEventQuantization=TransitionQuantization.NextBeat;
+  var instrument=parent.MasterTrack.Instruments[0];instrument.SubEventQuantization=entryOverride?TransitionQuantization.NextPhrase:TransitionQuantization.NextBeat;
   instrument.SubEventTransitionBeats=0;instrument.RotateSubEventsAtEnd=true;
   instrument.SubEvents[0].Conditions.Add(new(){Parameter=phase,Minimum=0,Maximum=0});
   instrument.SubEvents.Add(new(){Event=b,Conditions=new(){new(){Parameter=phase,Minimum=1,Maximum=1}}});
+  if(entryOverride){instrument.SubEvents[1].EntryQuantization=TransitionQuantization.NextBeat;instrument.SubEvents[1].EntryFadeBeats=0;}
   var old=new EventMusicSessionFake();old.Loaded.SetResult(true);var next=new EventMusicSessionFake();
   var sessions=new Queue<EventMusicSessionFake>(new[]{old,next});
   var instance=AudioSystem.GetEvent(parent).CreateInstance();instance.SharedMusicSessionFactory=()=>sessions.Dequeue();
@@ -167,6 +225,16 @@ public sealed partial class AudioEventTests
   instance.Stop(AudioStopMode.Immediate);instance.Release();next.Loaded.SetResult(true);
   Assert.AreEqual(1,current.Disposals);Assert.AreEqual(1,next.Disposals);
   Assert.AreEqual(AudioPlaybackState.Stopped,instance.PlaybackState);
+ }
+ [TestMethod] public void SharedChild_EntryTimingRejectsInvalidAuthoring()
+ {
+  var parent=Nested(SharedSong());var choice=parent.MasterTrack.Instruments[0].SubEvents[0];
+  choice.EntryQuantization=TransitionQuantization.NextBeat;choice.EntryFadeBeats=.25f;
+  Assert.IsTrue(AudioEventValidator.Validate(parent).IsValid);
+  choice.EntryFadeBeats=float.NaN;Assert.IsFalse(AudioEventValidator.Validate(parent).IsValid);
+  choice.EntryFadeBeats=-1;Assert.IsFalse(AudioEventValidator.Validate(parent).IsValid);
+  choice.EntryFadeBeats=.25f;choice.EntryQuantization=(TransitionQuantization)999;
+  Assert.IsFalse(AudioEventValidator.Validate(parent).IsValid);
  }
  [TestMethod] public void SharedEvent_ValidationAcceptsShortClipsAndRejectsClipsOutsideTheSong()
  {

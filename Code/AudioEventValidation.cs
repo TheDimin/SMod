@@ -62,10 +62,12 @@ public static partial class AudioEventValidator
 			result.Error( $"{eventPath}/MaximumTimelineJumpsPerUpdate", "Maximum timeline jumps must be at least one." );
 
 		var parameters = ValidateParameters( audioEvent, eventPath, result );
+        try { AudioSourceRuntime.Prepare(audioEvent,parameters); }
+        catch (Exception error) { result.Error(eventPath+"/Sources",error.Message); }
 		var trackNames = new HashSet<string>( StringComparer.OrdinalIgnoreCase );
 		var instrumentCount = 0;
 		if ( audioEvent.MasterTrack is not null )
-			instrumentCount += ValidateTrack( audioEvent.MasterTrack, $"{eventPath}/MasterTrack", trackNames, parameters, result );
+			instrumentCount += ValidateTrack( audioEvent, audioEvent.MasterTrack, $"{eventPath}/MasterTrack", trackNames, parameters, result );
 		if ( audioEvent.Tracks is not null )
 		{
 			for ( var i = 0; i < audioEvent.Tracks.Count; i++ )
@@ -76,7 +78,7 @@ public static partial class AudioEventValidator
 					result.Error( $"{eventPath}/Tracks[{i}]", "Track cannot be null." );
 					continue;
 				}
-				instrumentCount += ValidateTrack( track, $"{eventPath}/Tracks[{i}]", trackNames, parameters, result );
+				instrumentCount += ValidateTrack( audioEvent, track, $"{eventPath}/Tracks[{i}]", trackNames, parameters, result );
 			}
 		}
 
@@ -96,15 +98,22 @@ public static partial class AudioEventValidator
             catch(InvalidOperationException error){result.Error($"{eventPath}/SharedMusicOutput",error.Message);}
         }
         ValidateOverlays(audioEvent,eventPath,parameters,result);
+        ValidateLayerControls(audioEvent,eventPath,parameters,result);
+        ValidateInstrumentTriggers(audioEvent,eventPath,parameters,result);
 		foreach ( var instrument in (audioEvent.Tracks ?? new()).Prepend( audioEvent.MasterTrack ).Where( track => track is not null )
 			.SelectMany( track => track.Instruments ?? new() ).Where( instrument => instrument is not null && instrument.IsSubEvent ) )
 		foreach ( var choice in instrument.SubEvents.Where( choice => choice?.Event is not null ) )
+        foreach(var childEvent in new[]{choice.Event,choice.ExitEvent}.Where(e=>e is not null))
 		{
-			foreach ( var issue in ValidateGraph( choice.Event, ancestors, depth + 1 ).Issues )
+			foreach ( var issue in ValidateGraph( childEvent, ancestors, depth + 1 ).Issues )
 				result.Error( $"{eventPath}/SubEvents/{issue.Path}", issue.Message );
-			foreach ( var childParameter in choice.Event.Parameters?.Where( parameter => parameter is not null ) ?? Enumerable.Empty<AudioParameter>() )
+			foreach ( var childParameter in childEvent.Parameters?.Where( parameter => parameter is not null ) ?? Enumerable.Empty<AudioParameter>() )
 			{
-				if ( !parameters.TryGetValue( childParameter.Name ?? "", out var parentParameter ) ) continue;
+				if ( !parameters.TryGetValue( childParameter.Name ?? "", out var parentParameter ) )
+                {
+                    result.Error( $"{eventPath}/SubEvents/{childParameter.Name}", "Child input must be declared by the direct parent event." );
+                    continue;
+                }
 				if ( childParameter.Type != parentParameter.Type
 					|| (childParameter.Type != AudioParameterType.Labeled && (childParameter.Minimum > parentParameter.Minimum || childParameter.Maximum < parentParameter.Maximum))
 					|| (childParameter.Type == AudioParameterType.Labeled && (parentParameter.Labels ?? new()).Except( childParameter.Labels ?? new() ).Any()) )
@@ -346,6 +355,7 @@ public static partial class AudioEventValidator
 	}
 
 	private static int ValidateTrack(
+        AudioEvent audioEvent,
 		AudioTrack track,
 		string path,
 		HashSet<string> trackNames,
@@ -379,21 +389,27 @@ public static partial class AudioEventValidator
 			}
 
 			count++;
-			ValidateInstrument( instrument, instrumentPath, parameters, result );
+            if(track.Overlay is not null && instrument.Echo is not null)result.Error(instrumentPath+"/Echo","Echo is not supported on overlay phrase tracks.");
+			ValidateInstrument( audioEvent, instrument, instrumentPath, parameters, result );
 		}
 		return count;
 	}
 
 	private static void ValidateInstrument(
+        AudioEvent audioEvent,
 		AudioInstrument instrument,
 		string path,
 		IReadOnlyDictionary<string, AudioParameter> parameters,
 		AudioEventValidationResult result )
 	{
 
+		if(instrument.Echo is {} echo && (!echo.IsValid || !audioEvent.UI || audioEvent.SharedMusicOutput != echo.ReleaseOnly || instrument.IsSubEvent || instrument.LayerControl is not null))
+            result.Error(path+"/Echo","Echo requires valid settings and a local source instrument. Shared stems require ReleaseOnly; native sources require it off.");
+		if(!float.IsFinite(instrument.SubEventExitFadeSeconds)||instrument.SubEventExitFadeSeconds<0||instrument.SubEventExitFadeSeconds>10)result.Error(path,"Sub-event exit fade must be 0 to 10 seconds.");
+        if(!instrument.IsSubEvent && (instrument.SubEventExitFadeSeconds>0 || instrument.RetainSubEventPositionOnTimelineJump))result.Error(path,"Child retention controls require a sub-event instrument.");
 		if ( instrument.IsSubEvent )
 		{
-			if ( instrument.Sound is not null ) result.Error( path, "Choose a Sound Event or Sub-graph Choices, not both." );
+			if ( instrument.SourceId!=Guid.Empty ) result.Error( path, "A sub-graph node cannot reference source data." );
 			if(!float.IsFinite(instrument.SubEventTransitionBeats) || instrument.SubEventTransitionBeats<0 || instrument.SubEventTransitionBeats>16)result.Error(path,"Sub-event transition beats must be from 0 to 16.");
             if ( !Enum.IsDefined( instrument.SubEventQuantization ) ) result.Error( path, "Unknown sub-graph change boundary." );
 			if ( !Enum.IsDefined( instrument.SubEventSelection ) ) result.Error( path, "Unknown sub-graph selection mode." );
@@ -403,12 +419,24 @@ public static partial class AudioEventValidator
 				var choice = instrument.SubEvents[i];
 				if ( choice?.Event is null ) result.Error( $"{path}/SubEvents[{i}]", "A child Audio Event is required." );
 				if ( choice is not null ) ValidateConditions( choice.Conditions, $"{path}/SubEvents[{i}]/Conditions", parameters, result );
+                if(choice?.ExitEvent is {} exit && (!exit.SharedMusicOutput || exit.TimelineDuration<=0))result.Error(path,"Exit event must have shared music output and a positive duration; the parent plays its grid once.");
+                if(choice is not null && (!float.IsFinite(choice.ExitEventOverlapSeconds) || choice.ExitEventOverlapSeconds<0 || choice.ExitEventOverlapSeconds>0 && (choice.ExitEvent is null || choice.ExitEventOverlapSeconds>=choice.ExitEvent.TimelineDuration)))result.Error(path,"Exit event overlap must be non-negative and shorter than its exit passage.");
+                if(choice?.EntryQuantization is {} entry && !Enum.IsDefined(entry))result.Error(path,"Unknown child entry boundary.");
+                if(choice is not null) {
+                 ValidateConditions(choice.EarlyEntryConditions,$"{path}/SubEvents[{i}]/EarlyEntryConditions",parameters,result);
+                 if(!float.IsFinite(choice.EntryCrossfadeSeconds) || choice.EntryCrossfadeSeconds<0 || choice.EntryCrossfadeSeconds>10)result.Error(path,"Child entry crossfade seconds must be from 0 to 10.");
+                }
+                if(choice?.EntryFadeBeats is {} fade && (!float.IsFinite(fade) || fade<0 || fade>16))result.Error(path,"Child entry fade beats must be from 0 to 16.");
 			}
 		}
-		else if ( instrument.Sound is null )
-			result.Error( $"{path}/Sound", "Instrument requires a Sound Event or Sub-graph Choices." );
+		else if ( instrument.LayerControl is not null ) { }
+		else if ( instrument.SourceId==Guid.Empty )
+			result.Error( $"{path}/SourceId", "A sound instrument requires a graph-local source ID." );
 		else
-			ValidateSoundEvent( instrument.Sound, $"{path}/Sound", parameters, result );
+			{
+            try { _ = audioEvent.Source(instrument); }
+            catch(Exception error) { result.Error(path,error.Message); }
+            }
 		if ( !float.IsFinite( instrument.StartTime ) || instrument.StartTime < 0f )
 			result.Error( $"{path}/StartTime", "Instrument start time must be finite and non-negative." );
 		if(!float.IsFinite(instrument.OverlayBodySeconds) || instrument.OverlayBodySeconds<0
@@ -435,23 +463,23 @@ public static partial class AudioEventValidator
 		ValidateAutomations( instrument.Automations, $"{path}/Automations", parameters, result );
 	}
 
-	private static void ValidateSoundEvent(
-		SoundEventResource soundEvent,
+	internal static void ValidateSoundEvent(
+		AudioSourceDefinition soundEvent,
 		string path,
 		IReadOnlyDictionary<string, AudioParameter> parameters,
 		AudioEventValidationResult result )
 	{
 		if ( soundEvent.SelectionMode is not (SoundTrackSelectionMode.Random or SoundTrackSelectionMode.RandomExclusive) )
-			result.Error( $"{path}/SelectionMode", "Sound event selection mode is invalid." );
+			result.Error( $"{path}/SelectionMode", "Source selection mode is invalid." );
 		if ( !float.IsFinite( soundEvent.Volume.Min ) || !float.IsFinite( soundEvent.Volume.Max )
 			|| soundEvent.Volume.Min < 0f || soundEvent.Volume.Max < soundEvent.Volume.Min )
-			result.Error( $"{path}/Volume", "Sound event volume range must be finite, ordered, and non-negative." );
+			result.Error( $"{path}/Volume", "Source volume range must be finite, ordered, and non-negative." );
 		if ( !float.IsFinite( soundEvent.Pitch.Min ) || !float.IsFinite( soundEvent.Pitch.Max )
 			|| soundEvent.Pitch.Min <= 0f || soundEvent.Pitch.Max < soundEvent.Pitch.Min )
-			result.Error( $"{path}/Pitch", "Sound event pitch range must be finite, ordered, and greater than zero." );
+			result.Error( $"{path}/Pitch", "Source pitch range must be finite, ordered, and greater than zero." );
 		if ( soundEvent.Tracks is null || soundEvent.Tracks.Count == 0 )
 		{
-			result.Error( $"{path}/Tracks", "Sound event requires at least one track." );
+			result.Error( $"{path}/Tracks", "Source requires at least one track." );
 			return;
 		}
 

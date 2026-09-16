@@ -8,6 +8,7 @@ namespace Smod;
 /// </summary>
 internal sealed class AudioMusicPcmSession
 {
+ internal const int DefaultLeadSamples=2646; // 60 ms; late preparation must defer, never truncate.
 	internal sealed record Scheduled( long Sample, System.Threading.Tasks.Task<bool> Admission );
 	readonly AudioMusicPcmCommands commands;
 	readonly AudioBeatGrid grid;
@@ -33,7 +34,7 @@ internal sealed class AudioMusicPcmSession
 		if(closed) throw new InvalidOperationException("The music session is closed.");
 		commands.SetPaused(paused);
 	}
-	public AudioMusicPcmSession( AudioBeatGrid grid, int voices = 4, int pending = 32, int leadSamples = 11025, short[] backingPcm = null, float backingGain = 1f, bool repeatComposition = false, IReadOnlyList<AudioMusicPcmBacking.Stem> backingStems = null, int compositionFrames = 0 )
+	public AudioMusicPcmSession( AudioBeatGrid grid, int voices = 4, int pending = 32, int leadSamples = DefaultLeadSamples, short[] backingPcm = null, float backingGain = 1f, bool repeatComposition = false, IReadOnlyList<AudioMusicPcmBacking.Stem> backingStems = null, int compositionFrames = 0 )
 	{
 		ArgumentNullException.ThrowIfNull( grid );
 		if ( !grid.IsValid || leadSamples < 512 || leadSamples > 44100 ) throw new ArgumentOutOfRangeException( nameof( leadSamples ) );
@@ -51,11 +52,11 @@ internal sealed class AudioMusicPcmSession
 		commands = new AudioMusicPcmCommands( pending );
 		Processor = new AudioMusicPcmProcessor( new AudioMusicPcmRenderer( voices, backing: backing ), commands: commands );
 	}
- public void SetBackingGains(IReadOnlyList<float> gains)
+ public void SetBackingGains(IReadOnlyList<float> gains,IReadOnlyList<bool> tails=null)
  {
   if(closed)throw new InvalidOperationException("The music session is closed.");
   if(backing is null)throw new InvalidOperationException("The music session has no backing.");
-  backing.SetGains(gains);
+  backing.SetGains(gains,tails);
  }
  internal long? RequestDeadline(int maximumWaitBeats)
  {
@@ -65,20 +66,23 @@ internal sealed class AudioMusicPcmSession
   return frames>=long.MaxValue-Position ? long.MaxValue : Position+(long)Math.Floor(frames);
  }
 	/// <summary>Audio engine supplies an admitted immutable stereo 44100 Hz phrase. Null means no eligible boundary, session closed, or bounded queue/owner capacity reached.</summary>
-	public Scheduled TrySchedule( AudioEventInstance process, short[] pcm, int quantumBeats, float gain, IReadOnlyCollection<int> entryBars=null )
+	public Scheduled TrySchedule( AudioEventInstance process, short[] pcm, double quantumBeats, float gain, IReadOnlyCollection<int> entryBars=null )
 	{
 		ArgumentNullException.ThrowIfNull( process ); ArgumentNullException.ThrowIfNull( pcm );
 		if ( closed ) return null;
 		return TrySchedule(process.MusicRequestOwner,pcm,quantumBeats,gain,entryBars);
 	}
 	// Keep the owner captured before asynchronous preparation. Never resolve a restarted event here.
-	internal Scheduled TrySchedule(AudioMusicRequestOwner owner,short[] pcm,int quantumBeats,float gain,IReadOnlyCollection<int> entryBars=null,long? latestSample=null)
+	internal Scheduled TrySchedule(AudioMusicRequestOwner owner,short[] pcm,double quantumBeats,float gain,IReadOnlyCollection<int> entryBars=null,long? latestSample=null,long? earliestSample=null,int? schedulingLeadSamples=null,int bodyFrames=0)
 	{
 		ArgumentNullException.ThrowIfNull(owner); ArgumentNullException.ThrowIfNull(pcm);
 		if(closed || owner.IsCancelled || (pendingSeek is not null && (!pendingSeek.IsCompletedSuccessfully || !pendingSeek.Result)))return null;
 		if ( pcm.Length == 0 || pcm.Length % 2 != 0 ) throw new ArgumentException( "Expected stereo PCM.", nameof( pcm ) );
-		var earliest=checked(Position+leadSamples);
-        var sample=loopGrid is null ? AudioMusicPhraseGrid.Next(grid,earliest,quantumBeats,pcm.Length/2,entryBars) : loopGrid.Next(earliest,quantumBeats,pcm.Length/2,entryBars);
+        if(bodyFrames<0 || bodyFrames>pcm.Length/2)throw new ArgumentOutOfRangeException(nameof(bodyFrames));
+		var margin=schedulingLeadSamples ?? leadSamples;
+        if(margin<512 || margin>44100)throw new ArgumentOutOfRangeException(nameof(schedulingLeadSamples));
+        var earliest=Math.Max(checked(Position+margin),earliestSample ?? 0);
+        var sample=loopGrid is null ? AudioMusicPhraseGrid.Next(grid,earliest,quantumBeats,pcm.Length/2,entryBars) : loopGrid.Next(earliest,quantumBeats,pcm.Length/2,entryBars,bodyFrames);
         if(sample is null || (latestSample.HasValue && sample.Value>latestSample.Value) || (loopGrid is null && sample.Value+pcm.Length/2d>grid.End.Seconds*44100))return null;
 		owners.RemoveWhere( item => item.IsCancelled );
 		if ( !owners.Contains( owner ) && owners.Count >= 256 ) return null;

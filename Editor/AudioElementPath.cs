@@ -101,7 +101,7 @@ internal sealed record AudioElementTarget(object Value, string Pointer, string K
   {
    if (value is null) return;
    id = value switch { AudioTrack track => track.Id, AudioInstrument instrument => instrument.Id,
-    AudioAutomation automation => automation.Id, AudioAutomationPoint point => point.Id, _ => id };
+    AudioSourceDefinition source => source.Id, AudioAutomation automation => automation.Id, AudioAutomationPoint point => point.Id, _ => id };
    result.Add(new(value, path, value.GetType().Name, id, time));
   }
   void Automations(IEnumerable<AudioAutomation> values, string path, double time)
@@ -127,7 +127,9 @@ internal sealed record AudioElementTarget(object Value, string Pointer, string K
     Automations(instrument.Automations, p + "/Automations", instrument.StartTime);
    }
   }
-  Add(audioEvent, ""); Track(audioEvent.MasterTrack, "/MasterTrack");
+  Add(audioEvent, "");
+  for(var i=0;i<(audioEvent.Sources?.Count??0);i++) Add(audioEvent.Sources[i],"/Sources/"+i);
+  Track(audioEvent.MasterTrack, "/MasterTrack");
   for (var i = 0; i < audioEvent.Tracks.Count; i++) Track(audioEvent.Tracks[i], "/Tracks/" + i);
   for (var i = 0; i < audioEvent.DestinationMarkers.Count; i++) { var x = audioEvent.DestinationMarkers[i]; Add(x, "/DestinationMarkers/" + i, x.Position.Seconds, x.Id); }
   for (var i = 0; i < audioEvent.TransitionMarkers.Count; i++) { var x = audioEvent.TransitionMarkers[i]; Add(x, "/TransitionMarkers/" + i, x.Position.Seconds, x.Id); }

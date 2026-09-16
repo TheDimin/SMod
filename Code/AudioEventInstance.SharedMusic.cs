@@ -4,13 +4,13 @@ namespace Smod;
 public sealed partial class AudioEventInstance
 {
  AudioMusicEventPlayback sharedMusic;
- double sharedTimelineOffset;
+ long sharedTimelineOffsetSamples;
  Task<bool> sharedSeek;
  internal Func<IAudioMusicEventSession> SharedMusicSessionFactory;
  public string SharedMusicError {get;private set;}
  internal bool HasSharedMusicOutput=>sharedMusic is not null;
  float SharedMusicPosition=>sharedMusic.IsRunning && (sharedSeek is null || sharedSeek.IsCompletedSuccessfully && sharedSeek.Result)
-  ? (float)(sharedMusic.Position/44100d+sharedTimelineOffset) : _timelinePosition;
+  ? (float)((sharedMusic.Position+sharedTimelineOffsetSamples)/44100d) : _timelinePosition;
 
 
  void AddSharedMusicStates(List<AudioInstrumentPlaybackState> states)
@@ -37,7 +37,7 @@ public sealed partial class AudioEventInstance
   var envelope=local<0 || local>=range.Length?0:AudioInstrumentFade.Gain(instrument,local,(float)range.Length);
   voice=new(track.Name,part.Source.Sound?.ResourcePath,!sharedMusic.IsRunning?"Loading":local<0?"Scheduled":local>=range.Length?"Stopped":_paused?"Paused":gain*_volume*envelope<=.0001f?"Silent":"Playing",
    gain*_volume*envelope,1,(float)(range.Offset+Math.Clamp(local,0,range.Length)),instrument.StartTime,instrument.StartTime+(float)range.Length,
-   NativeGain:instrument.Sound.Volume.Min,EventGain:gain,InstanceGain:_volume,InstrumentGain:envelope);
+   NativeGain:_description.Resource.Source(instrument).Volume.Min,EventGain:gain,InstanceGain:_volume,InstrumentGain:envelope,Reason:"Continuous song part; track gain, world conditions and automation control its level.");
   return true;
  }
  void StartSharedMusic()
@@ -47,7 +47,7 @@ public sealed partial class AudioEventInstance
   var grid=AudioSharedMusicDefinition.RequireGrid(resource);
   AudioSharedMusicDefinition.RequireBacking(resource,grid,_parameters);
   sharedPhraseGrid=new(grid,(long)Math.Round((grid.End.Seconds-grid.Start.Seconds)*44100));
-  sharedTimelineOffset=0;sharedSeek=null;SharedMusicError=null;
+  sharedTimelineOffsetSamples=0;sharedSeek=null;SharedMusicError=null;
   var owner=new AudioMusicEventPlayback(resource,SharedMusicSessionFactory){Paused=_paused,Volume=Math.Clamp(_volume,0,1)};
   sharedMusic=owner;owner.UpdateMix(CaptureSharedMusicMix());
   _=CompleteSharedMusicStart(owner,grid);
@@ -73,14 +73,16 @@ public sealed partial class AudioEventInstance
  {
   StopSharedOverlays();
   foreach(var state in overlayStates.Values)state.Pending=false;
-  sharedTimelineOffset=0;
+  sharedTimelineOffsetSamples=0;
   sharedSeek=sharedMusic.Seek((long)Math.Round(position*44100d));
  }
- void UpdateSharedMusicMix()
+ void UpdateSharedMusicMix(bool parametersChanged=false)
  {
   if(sharedMusic is null || _playbackState==AudioPlaybackState.Stopping)return;
   sharedMusic.Volume=Math.Clamp(_volume,0,1);
-  sharedMusic.UpdateMix(CaptureSharedMusicMix());
+  var mix=CaptureSharedMusicMix();
+  if(parametersChanged)sharedMusic.UpdateState(_parameters,mix);
+  else sharedMusic.UpdateMix(mix);
   foreach(var phrase in sharedOverlays)ApplySharedOverlayGain(phrase);
  }
  void StopSharedMusic(float fade)
@@ -127,7 +129,7 @@ internal static class AudioSharedMusicDefinition
   foreach(var request in AudioEventEvaluator.BuildPlaybackPlan(resource,parameters,includeInactive:true).Where(r=>r.Track.Overlay?.Enabled==true))
   {
    var gain=AudioMusicEventBacking.Gain(request)*request.Track.Overlay.Volume;
-   if(gain>1)throw new InvalidOperationException("Shared action phrase gain must be within 0-1.");
+   if(!float.IsFinite(gain)||gain<0)throw new InvalidOperationException("Music phrase gain must be finite and zero or greater.");
   }
  }
 }

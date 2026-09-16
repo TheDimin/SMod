@@ -7,12 +7,12 @@ using Smod;
 namespace Editor;
 
 /// <summary>
-/// Loads and retains one waveform per SoundEventResource track. Track order
+/// Loads and retains one waveform per graph-owned source track. Track order
 /// is preserved so a selected SoundFile maps directly to the visible A/B/C/D lane.
 /// </summary>
 internal sealed class AudioInstrumentWaveformPreview
 {
-	private readonly SoundEventResource _sound;
+	private readonly AudioSourceDefinition _source;
 	private readonly Action _loaded;
 	private IReadOnlyList<AudioVariationWaveform> _variations = Array.Empty<AudioVariationWaveform>();
 
@@ -20,9 +20,9 @@ internal sealed class AudioInstrumentWaveformPreview
 	public int Revision { get; private set; }
 	public float Duration => MathF.Max( 0.1f, _variations.Select( variation => variation.Duration ).DefaultIfEmpty( 1f ).Max() );
 
-	public AudioInstrumentWaveformPreview( SoundEventResource sound, Action loaded )
+	public AudioInstrumentWaveformPreview( AudioSourceDefinition source, Action loaded )
 	{
-		_sound = sound;
+		_source = source;
 		_loaded = loaded;
 	}
 
@@ -30,7 +30,7 @@ internal sealed class AudioInstrumentWaveformPreview
 	{
 		try
 		{
-			var tracks = _sound?.Tracks?.ToArray() ?? Array.Empty<SoundEventTrack>();
+			var tracks = _source?.Tracks?.ToArray() ?? Array.Empty<SoundEventTrack>();
 			if ( tracks.Length == 0 )
 				return;
 
@@ -60,7 +60,7 @@ internal sealed class AudioInstrumentWaveformPreview
 		}
 		catch ( Exception exception )
 		{
-			Log.Warning( $"Could not load waveform preview for '{_sound?.ResourcePath}': {exception.Message}" );
+			Log.Warning( $"Could not load waveform preview for source '{_source?.Id}': {exception.Message}" );
 		}
 	}
 }

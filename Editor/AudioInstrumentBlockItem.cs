@@ -4,6 +4,7 @@ using System.Runtime.CompilerServices;
 using System.Text.Json.Nodes;
 using Sandbox.Helpers;
 using Smod;
+using Smod.Editor;
 
 namespace Editor;
 
@@ -55,8 +56,8 @@ internal sealed class AudioInstrumentBlockItem : GraphicsItem
 		Movable = true;
 		Focusable = true;
 		Cursor = CursorShape.SizeAll;
-		ToolTip = $"{AudioTimelineView.InstrumentDescription( instrument )}\nDrag the block to move it. Drag either edge to trim. Drag the top fade handles inward to fade volume.";
-		_waveformPreview = new AudioInstrumentWaveformPreview( instrument.Sound, OnWaveformsLoaded );
+		ToolTip = $"{AudioTimelineView.InstrumentDescription( instrument, _view.Event )}\nDrag the block to move it. {(instrument.CompoundHits is { Count: > 0 } ? "Edit Compound Hits to change source ranges." : "Drag either edge to trim.")} Drag the top fade handles inward to fade volume.";
+		_waveformPreview = new AudioInstrumentWaveformPreview( AudioSourceAuthoring.Resolve( _view.Event, instrument ), OnWaveformsLoaded );
 		_ = _waveformPreview.LoadAsync();
 	}
 
@@ -91,16 +92,19 @@ internal sealed class AudioInstrumentBlockItem : GraphicsItem
             ToolTip=$"{selected.Track} | {states.Count} overlapping voices\nSum of voice gains: {aggregate.Gain:0.####}. Not measured output loudness.\n"
                 +string.Join("\n",states.Select(x=>$"{(x.IsReleaseTail ? "Tail" : "Body")} | {x.State} | Gain {x.Gain:0.####} | Source {x.SourcePosition:0.000}s | {x.Source}"));
         else if(selected?.IsReleaseTail==true)ToolTip+="\nRetained release tail";
+        if(states.Count > 1 && Instrument.CompoundHits is {Count: > 0}) ToolTip += "\n" + AudioTimelineView.InstrumentDescription(Instrument, _view.Event);
         return selected;
     }
     public void SetLiveState(AudioLiveVoice state)
     {
         liveState=state;
-        if(state is null) {ToolTip=AudioTimelineView.InstrumentDescription(Instrument);SetPlaybackState(null);Update();return;}
-        var source=Instrument.Sound?.Tracks.FirstOrDefault(x=>x.Sound?.ResourcePath==state.Source);
+        if(state is null) {ToolTip=AudioTimelineView.InstrumentDescription(Instrument, _view.Event);SetPlaybackState(null);Update();return;}
+        var source=AudioSourceAuthoring.Resolve( _view.Event, Instrument )?.Tracks?.FirstOrDefault(x=>x.Sound?.ResourcePath==state.Source);
         SetPlaybackState(new AudioInstrumentPlaybackState(Track,Instrument,state.State is "Playing" or "Silent" or "Paused",state.State=="Scheduled",state.State=="Paused",state.SourcePosition,source,source?.Sound,state.ChildInstanceId,state.ChildEvent));
         var decibels=state.Gain>0 ? $"{20f*MathF.Log10(state.Gain):0.0} dB" : "silent";
         ToolTip=$"{state.Track} | {state.State}\nVoice gain (before mixer): {state.Gain:0.####} ({decibels}) | Pitch: {state.Pitch:0.###} | Source time: {state.SourcePosition:0.000}s\nFill scale: -60 to 0 dB gain. Not measured output loudness.\n{state.Source}";
+        if(Instrument.CompoundHits is {Count: > 0}) ToolTip = ToolTip.Replace("Source time:", "Set time:") + "\n" + AudioTimelineView.InstrumentDescription(Instrument, _view.Event);
+        if(!string.IsNullOrWhiteSpace(state.Reason)) ToolTip += "\n" + state.Reason;
         Update();
     }
 
@@ -158,7 +162,7 @@ internal sealed class AudioInstrumentBlockItem : GraphicsItem
 			{
 				_fadeBefore = _view.CaptureEventState();
 				_fadeDragSceneX = e.ScenePosition.x;
-				_fadeInstrumentDuration = MathF.Max( 0.01f, AudioTimelineView.EstimateDuration( Instrument ) );
+				_fadeInstrumentDuration = MathF.Max( 0.01f, AudioTimelineView.EstimateDuration( Instrument, _view.MusicBeatsPerMinute, _view.Event ) );
 				_fadeOriginalDuration = _fadeEdge == FadeEdge.Start ? Instrument.FadeInDuration : Instrument.FadeOutDuration;
 				Movable = false;
 				_view.SelectInstrument( Instrument );
@@ -170,12 +174,13 @@ internal sealed class AudioInstrumentBlockItem : GraphicsItem
 			_trimEdge = e.LocalPosition.x <= 7f
 				? TrimEdge.Start
 				: e.LocalPosition.x >= Width - 7f ? TrimEdge.End : TrimEdge.None;
+			if ( Instrument.CompoundHits is { Count: > 0 } ) _trimEdge = TrimEdge.None;
 			if ( _trimEdge != TrimEdge.None )
 			{
 				_trimBefore = _view.CaptureEventState();
 				_trimDragSceneX = e.ScenePosition.x;
 				_trimOriginalStart = Instrument.TrimStart;
-				_trimSourceDuration = Instrument.IsSubEvent ? AudioTimelineView.EstimateDuration( Instrument ) + Instrument.TrimStart : MathF.Max( 0.01f, _waveformPreview.Duration );
+				_trimSourceDuration = Instrument.IsSubEvent ? AudioTimelineView.EstimateDuration( Instrument, _view.MusicBeatsPerMinute, _view.Event ) + Instrument.TrimStart : MathF.Max( 0.01f, _waveformPreview.Duration );
 				_trimOriginalEnd = Instrument.TrimEnd > 0f ? MathF.Min( Instrument.TrimEnd, _trimSourceDuration ) : _trimSourceDuration;
 				Movable = false;
 				_view.SelectInstrument( Instrument );
@@ -253,7 +258,7 @@ internal sealed class AudioInstrumentBlockItem : GraphicsItem
 		else
 			Instrument.TrimEnd = (_trimOriginalEnd + delta).Clamp( Instrument.TrimStart + 0.01f, _trimSourceDuration ).SnapToGrid( 0.01f );
 
-		Resize( Size.WithX( MathF.Max( 28f, AudioTimelineView.EstimateDuration( Instrument ) * _view.PixelsPerSecond ) ) );
+		Resize( Size.WithX( MathF.Max( 28f, AudioTimelineView.EstimateDuration( Instrument, _view.MusicBeatsPerMinute, _view.Event ) * _view.PixelsPerSecond ) ) );
 		_view.PreviewTrackChange();
 		InvalidateStaticContent();
 		e.Accepted = true;
@@ -353,7 +358,7 @@ internal sealed class AudioInstrumentBlockItem : GraphicsItem
 			_visualState,
 			_audible,
 			hovered,
-			selected );
+			selected, _view.MusicBeatsPerMinute );
 
 	}
 
@@ -387,10 +392,15 @@ internal sealed class AudioInstrumentBlockItem : GraphicsItem
 		var width = Math.Max( 1, (int)MathF.Ceiling( Width ) );
 		var height = Math.Max( 1, (int)MathF.Ceiling( Height ) );
 		var contentSignature = HashCode.Combine(
-			AudioTimelineView.InstrumentName( Instrument ),
+			AudioTimelineView.InstrumentName( Instrument, _view.Event ),
 			Instrument.Conditions?.Count ?? 0,
 			Instrument.Automations?.Count ?? 0,
-			HashCode.Combine( ReferenceSignature( Instrument.Sound ), Instrument.SubEvents?.Count ?? 0 ) );
+			HashCode.Combine( ReferenceSignature( AudioSourceAuthoring.Resolve( _view.Event, Instrument ) ), Instrument.SubEvents?.Count ?? 0 ) );
+		if ( Instrument.CompoundHits is { Count: > 0 } hits )
+		{
+			contentSignature = HashCode.Combine( contentSignature, _view.MusicBeatsPerMinute );
+			foreach ( var hit in hits ) contentSignature = HashCode.Combine( contentSignature, hit?.SourceOffset, hit?.Length, hit?.BeatOffset, hit?.Gain );
+		}
 		var selectedVariationSignature = HashCode.Combine(
 			ReferenceSignature( _visualState.SelectedTrack ),
 			ReferenceSignature( _visualState.SelectedSound ) );
@@ -461,7 +471,7 @@ internal sealed class AudioInstrumentBlockItem : GraphicsItem
 					Instrument,
 					_waveformPreview,
 					_visualState,
-					_audible );
+					_audible, _view.MusicBeatsPerMinute );
 			}
 			_staticTiles.Add( index, tile );
 		}

@@ -28,6 +28,46 @@ public sealed partial class AudioEventTests
   Assert.IsTrue(AudioEventValidator.Validate(parent).IsValid);
  }
 
+    [TestMethod]
+    public void SubGraph_RequiresInputsOnEveryDirectParentIncludingExitGraphs()
+    {
+        var child = CreateEvent();
+        child.Parameters.Add(new() { Name = "Work", Maximum = 1 });
+        Assert.IsTrue(AudioEventValidator.Validate(child).IsValid, "A graph remains valid on its own.");
+        var parent = Nested(child);
+        Assert.IsFalse(AudioEventValidator.Validate(parent).IsValid);
+        parent.Parameters.Add(new() { Name = "work", Maximum = 1 });
+        Assert.IsTrue(AudioEventValidator.Validate(parent).IsValid);
+        var root = Nested(parent);
+        Assert.IsFalse(AudioEventValidator.Validate(root).IsValid, "Inputs must cross every graph edge.");
+        root.Parameters.Add(new() { Name = "Work", Maximum = 1 });
+        Assert.IsTrue(AudioEventValidator.Validate(root).IsValid);
+        var exit = CreateEvent(); exit.Parameters.Add(new() { Name = "Finish", Maximum = 1 });
+        parent.MasterTrack.Instruments[0].SubEvents[0].ExitEvent = exit;
+        Assert.IsFalse(AudioEventValidator.Validate(parent).IsValid);
+    }
+
+    [TestMethod]
+    public void SubGraph_BindsDistinctInputDefinitionsWithoutSharingInstanceValues()
+    {
+        var source = new AudioParameter { Name = "Work", Maximum = 1 };
+        var target = new AudioParameter { Name = "work", Maximum = 1 };
+        var child = CreateEvent(); child.Parameters.Add(target);
+        child.MasterTrack.Automations.Add(new() { Parameter = target, Target = AudioAutomationTarget.Volume,
+            Points = new() { new() { Input = 0, Output = .2f }, new() { Input = 1, Output = 1 } } });
+        var parent = Nested(child); parent.Parameters.Add(source);
+        var first = AudioSystem.GetEvent(parent).CreateInstance();
+        var second = AudioSystem.GetEvent(parent).CreateInstance();
+        first.SetParameterByName("Work", 1); first.Start(); second.Start();
+        Assert.AreEqual(1f, _backend.Voices[0].Volume, .0001f);
+        Assert.AreEqual(.2f, _backend.Voices[1].Volume, .0001f);
+        first.SetParameterByName("Work", .5f);
+        Assert.AreEqual(.6f, _backend.Voices[0].Volume, .0001f);
+        Assert.AreEqual(.2f, _backend.Voices[1].Volume, .0001f);
+        Assert.AreEqual(2, _backend.Voices.Count, "Value updates must not restart child voices.");
+        first.Stop(AudioStopMode.Immediate); second.Stop(AudioStopMode.Immediate);
+    }
+
 	[TestMethod]
 	public void SubGraph_InheritsCurrentParametersAndLiveUpdatesWithoutRestart()
 	{
@@ -142,10 +182,9 @@ public sealed partial class AudioEventTests
 		instance.Stop( AudioStopMode.Immediate );
 		var alternative = CreateEvent();
 		parent.MasterTrack.Instruments[0].SubEvents.Add( new() { Event = alternative } );
+		AudioEventValidator.Validate(parent).AssertValid();
 		instance.Start();
-#pragma warning disable CS0618
-		Assert.AreSame( alternative.MasterTrack.Instruments[0].Sound.Tracks[0].Sound, _backend.Voices.Last().Sound.Sounds[0] );
-#pragma warning restore CS0618
+		Assert.AreSame( SourceOf( alternative, alternative.MasterTrack.Instruments[0] ).Tracks[0].Sound, _backend.Voices.Last().Sound.Sounds[0] );
 		Assert.AreNotEqual( first, instance.InstrumentPlaybackStates.Single().ChildInstanceId );
 		instance.Stop( AudioStopMode.Immediate );
 	}
@@ -176,6 +215,7 @@ public sealed partial class AudioEventTests
 		var root = Nested( middle );
 		root.Parameters.Add( new() { Name = "Stage", Type = AudioParameterType.Labeled, Labels = new() { "work", "finish" }, DefaultLabel = "work" } );
 		root.Parameters.Add( new() { Name = "Services", Type = AudioParameterType.Discrete, Minimum = 0, Maximum = 100 } );
+		AudioEventValidator.Validate(root).AssertValid();
 		var instance = AudioSystem.GetEvent( root ).CreateInstance(); instance.Start();
 		instance.SetParameterByNameWithLabel( "Stage", "finish" ); instance.SetParameterByName( "Services", 7 );
 		var mid = AudioLiveDiagnostics.CaptureActive().Single( state => state.ParentInstanceId == instance.LiveId );

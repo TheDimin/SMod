@@ -8,6 +8,17 @@ namespace Smod.Editor;
 
 internal static class AudioTimelineInspectorUx
 {
+    public static string DescribeLayerControl(AudioInstrument instrument)
+    {
+        if(instrument?.LayerControl is not {} control)return null;
+        var child=control.ChildEvent;
+        var target=child?.Tracks?.Prepend(child.MasterTrack).FirstOrDefault(track=>track?.Id==control.ChildTrackId);
+        var role=control.Mode==AudioMusicControlMode.SustainLayer ? "Sustain instrument" : "Trigger complete phrases";
+        var name=target?.Name ?? $"Child track {control.ChildTrackId:N}";
+        return $"Parent control | {role}\nControls: {name}\nTrigger: {control.TriggerParameter?.Name ?? "Not configured"}\nThe child event owns the audio source; this control needs no source of its own."
+            +(child is null ? "" : $"\n{child.ResourcePath}");
+    }
+
 	public static bool ShowInGenericSheet( object selection, string propertyName )
 	{
 		if ( selection is DestinationMarker or TransitionMarker or TransitionRegion or LoopRegion
@@ -52,16 +63,6 @@ internal static class AudioTimelineInspectorUx
 		return choices;
 	}
 
-	public static AudioSoundSourceAccess ResolveSoundSourceAccess( SoundEventResource sound )
-	{
-		if ( sound is null )
-			return AudioSoundSourceAccess.None;
-
-		return sound.EmbeddedResource is not null
-			? AudioSoundSourceAccess.EditEmbedded
-			: AudioSoundSourceAccess.OpenExternal;
-	}
-
 	public static bool TryParseSeconds( string text, out TimelineTime value )
 	{
 		value = default;
@@ -73,13 +74,6 @@ internal static class AudioTimelineInspectorUx
 		value = new TimelineTime( seconds );
 		return true;
 	}
-}
-
-internal enum AudioSoundSourceAccess
-{
-	None,
-	EditEmbedded,
-	OpenExternal
 }
 
 internal readonly record struct AudioDestinationChoice( Guid Id, string Label );

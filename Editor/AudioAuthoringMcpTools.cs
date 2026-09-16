@@ -31,6 +31,11 @@ public static class AudioAuthoringMcpTools
  [McpTool("undo_audio_authoring")]
  public static object Undo(string resourcePath,bool redo=false)=>AudioEventEditorWindow.AuthoringWindow(resourcePath).AuthoringUndo(redo);
 
+ /// <summary>Save only the selected Audio Event with its inspected revision, then verify disk read-back. Does not save referenced child-event drafts. Use when other open audio resources have unrelated user edits; inspect_audio_authoring returns their paths.</summary>
+ [McpTool("save_audio_event_verified")]
+ public static object SaveEvent(string resourcePath,string expectedRevision)
+  =>AudioEventEditorWindow.AuthoringWindow(resourcePath).AuthoringSave(expectedRevision);
+
  private static List<AudioEvent> Graph(string root)
  {
   var result=new List<AudioEvent>();var seen=new HashSet<AudioEvent>();
@@ -38,7 +43,7 @@ public static class AudioAuthoringMcpTools
   {
    if(e is null || !seen.Add(e))return;
    if(depth>16 || result.Count>=128)throw new ArgumentException("Graph exceeds inspection limit.");
-   foreach(var choice in e.Tracks.Prepend(e.MasterTrack).Where(t=>t is not null).SelectMany(t=>t.Instruments).Where(i=>i is not null).SelectMany(i=>i.SubEvents ?? new()))Visit(choice.Event,depth+1);
+   foreach(var choice in e.Tracks.Prepend(e.MasterTrack).Where(t=>t is not null).SelectMany(t=>t.Instruments).Where(i=>i is not null).SelectMany(i=>i.SubEvents ?? new())){Visit(choice.Event,depth+1);Visit(choice.ExitEvent,depth+1);}
    result.Add(e);
   }
   Visit(AudioEventEditorWindow.AuthoringWindow(root).Event,0);return result;
@@ -70,7 +75,7 @@ public static class AudioAuthoringMcpTools
   }
   return new{Success=true,Verified=verified};
  }
- /// <summary>Run a bounded muted scenario on a temporary instance. stepsJson is an array with parameters:{Intensity:0.8,WorldState:2}, seekSeconds, paused, waitSeconds, expectSongUnchanged or expectSongChanged (relative to preceding step). Total wait at most 20 seconds, at most 32 steps. Returns snapshots and explicit checks; always stops/releases the temporary instance. Does not change active gameplay or save resources. Timing proof is not listening proof.</summary>
+ /// <summary>Run a bounded muted scenario on a temporary instance. stepsJson is an array with parameters:{Intensity:0.8,WorldState:2}, seekSeconds (parent), seekToSongEndLeadSeconds (active child only; finite 0 to child grid duration), paused, waitSeconds, expectSongUnchanged or expectSongChanged (relative to preceding step). Numeric parameters are applied as one batch; labels are applied individually first. Parameters precede seek: put seek in an earlier step when testing new triggers. Total wait at most 20 seconds, at most 32 steps. Returns snapshots, SongEndSeek positions, and explicit checks; always stops/releases the temporary instance. Does not change active gameplay or save resources. Timing proof is not listening proof.</summary>
  [McpTool("check_audio_scenario")]
  public static async Task<object> Scenario(string resourcePath,string stepsJson)
  {
@@ -84,9 +89,15 @@ public static class AudioAuthoringMcpTools
    var started=false;
    foreach(var step in steps)
    {
-    if(step["parameters"] is JsonObject parameters)foreach(var pair in parameters){
-     if(pair.Value is JsonValue value && value.TryGetValue<string>(out var label))instance.SetParameterByNameWithLabel(pair.Key,label);
-     else instance.SetParameterByName(pair.Key,pair.Value.GetValue<float>());
+    if(step["parameters"] is JsonObject parameters)
+    {
+     var numeric=new Dictionary<string,float>();
+     foreach(var pair in parameters)
+     {
+      if(pair.Value is JsonValue value && value.TryGetValue<string>(out var label))instance.SetParameterByNameWithLabel(pair.Key,label);
+      else numeric.Add(pair.Key,pair.Value.GetValue<float>());
+     }
+     instance.SetParametersByName(numeric);
     }
     if(!started)
     {
@@ -96,11 +107,19 @@ public static class AudioAuthoringMcpTools
     }
     if(step["paused"] is {} pause)instance.Paused=pause.GetValue<bool>();
     if(step["seekSeconds"] is {} seek)instance.TimelinePosition=seek.GetValue<float>();
+    object songEndSeek=null;
     if(step["seekToSongEndLeadSeconds"] is {} lead)
     {
      var active=instance.InstrumentPlaybackStates.FirstOrDefault();
      var child=AudioLiveDiagnostics.CaptureActive().FirstOrDefault(x=>x.Id==active.ChildInstanceId) ?? throw new ArgumentException("End seek requires an active song child.");
-     instance.TimelinePosition+=Math.Max(0,(float)child.GridEnd-child.Position-lead.GetValue<float>());
+     var leadSeconds=lead.GetValue<float>();
+     if(!float.IsFinite(leadSeconds) || leadSeconds<0 || leadSeconds>child.GridEnd-child.GridStart)
+      throw new ArgumentException("Song-end lead must be finite and within the active child grid duration.");
+     var childInstance=AudioLiveDiagnostics.FindForAudition(child.Id) ?? throw new ArgumentException("The scenario child is no longer active.");
+     var parentBefore=instance.TimelinePosition;
+     var requested=(float)child.GridEnd-leadSeconds;
+     childInstance.TimelinePosition=requested;
+     songEndSeek=new{Child=child.Id,Before=child.Position,Requested=requested,ParentBefore=parentBefore,ParentAfter=instance.TimelinePosition};
     }
     var wait=step["waitSeconds"]?.GetValue<float>() ?? 0;
     var clock=System.Diagnostics.Stopwatch.StartNew();
@@ -115,7 +134,7 @@ public static class AudioAuthoringMcpTools
     if(step["expectState"] is {} expected)ok &= instance.PlaybackState.ToString()==expected.GetValue<string>();
     if(step["expectPaused"] is {} expectedPause)ok &=instance.Paused==expectedPause.GetValue<bool>();
     passed &=ok;
-    reports.Add(new{Passed=ok,Song=song,Instance=instance.LiveId,Snapshots=AudioLiveDiagnostics.CaptureActive().Where(x=>x.Id==instance.LiveId || x.ParentInstanceId==instance.LiveId).ToArray()});previous=song;
+    reports.Add(new{Passed=ok,Song=song,Instance=instance.LiveId,SongEndSeek=songEndSeek,Snapshots=AudioLiveDiagnostics.CaptureActive().Where(x=>x.Id==instance.LiveId || x.ParentInstanceId==instance.LiveId).ToArray()});previous=song;
    }
   }
   finally{instance.Stop(AudioStopMode.Immediate);instance.Release();}

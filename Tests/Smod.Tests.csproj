@@ -11,6 +11,7 @@
   <PackageReference Include="MSTest.TestAdapter" Version="3.10.5" />
   <PackageReference Include="MSTest.TestFramework" Version="3.10.5" />
   <ProjectReference Include="../Code/smod.csproj" /><Compile Include="../Editor/AudioPreviewTransportMath.cs" Link="AudioPreviewTransportMath.cs" />
+  <Compile Include="../Editor/AudioSessionMeterTap.cs" Link="AudioSessionMeterTap.cs" />
   <Compile Include="../Editor/AudioLiveAuditionSession.cs" Link="AudioLiveAuditionSession.cs" />
   <Compile Include="../Editor/AudioVisibleTileRange.cs" Link="AudioVisibleTileRange.cs" />
   <Compile Include="../Editor/AudioDocumentSaveState.cs" Link="AudioDocumentSaveState.cs" />

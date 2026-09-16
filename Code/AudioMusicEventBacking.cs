@@ -26,37 +26,37 @@ internal sealed class AudioMusicEventBacking
    ReferenceEquals(request.Track,resource.MasterTrack)?null:request.Track.Tone,Gain(request))).ToArray();
  }
  internal static float Gain(AudioVoiceRequest request)
+  => Gain(request.SourceData,request.Volume,request.Pitch);
+ internal static float Gain(AudioSourceDefinition sound,float volume,float pitch)
  {
-  var sound=request.Instrument.Sound;
+  ArgumentNullException.ThrowIfNull(sound);
   // Changing speed destroys shared-clock alignment. Do not silently discard pitch authoring.
-  if(request.Pitch!=1 || sound.Pitch.Min!=1 || sound.Pitch.Max!=1)
+  if(pitch!=1 || sound.Pitch.Min!=1 || sound.Pitch.Max!=1)
    throw new InvalidOperationException("Shared continuous backing requires fixed unit pitch.");
   if(sound.Volume.Min!=sound.Volume.Max)
    throw new InvalidOperationException("Shared continuous backing requires a fixed source gain; use track automation for variation.");
-  var gain=request.Volume*sound.Volume.Min;
-  if(!float.IsFinite(gain)||gain<0||gain>1)throw new InvalidOperationException("Shared backing gain must be within 0–1.");
+  var gain=volume*sound.Volume.Min;
+  if(!float.IsFinite(gain)||gain<0)throw new InvalidOperationException("Music track gain must be finite and zero or greater.");
   return gain;
  }
+ public bool[] EvaluateTailPermissions(IReadOnlyDictionary<AudioParameter,AudioParameterValue> parameters,AudioMusicMixState mix)
+  =>slots.Select(slot=>AudioEventEvaluator.EvaluateSelectedVoice(resource,slot,parameters).Active && (mix?.TailAllowed(slot.Track)??true)).ToArray();
  public float[] EvaluateGains(IReadOnlyDictionary<AudioParameter,AudioParameterValue> parameters,AudioMusicMixState mix=null)
  {
-  // Preserve the selected source even when the authoring offers random alternatives.
-  var plan=AudioEventEvaluator.BuildPlaybackPlan(resource,parameters,(instrument,eligible)=>
+  var gains=new float[slots.Length];
+  for(var index=0;index<slots.Length;index++)
   {
-   var slot=slots.FirstOrDefault(item=>ReferenceEquals(item.Instrument,instrument));
-   return slot is not null && eligible.Contains(slot.SoundTrack)?slot.SoundTrack:eligible[0];
-  });
-  return slots.Select(slot=>
-  {
-   var current=plan.FirstOrDefault(item=>ReferenceEquals(item.Instrument,slot.Instrument)
-    && ReferenceEquals(item.SoundTrack,slot.SoundTrack));
-   if(current is null)return 0;
-   var gain=Gain(current);
+   var slot=slots[index];
+   var current=AudioEventEvaluator.EvaluateSelectedVoice(resource,slot,parameters);
+   if(!current.Active)continue;
+   var gain=Gain(slot.SourceData,current.Volume,current.Pitch);
    if(mix is not null)
    {
-    var duration=AudioMusicSourcePreparation.ResolveRange(current.Instrument,current.SoundTrack).Length;
-    gain*=mix.Gain(current.Track)*(IncludesTimeline?1:AudioInstrumentFade.Gain(current.Instrument,mix.Position-current.StartTime,duration));
+    var duration=AudioMusicSourcePreparation.ResolveRange(slot.Instrument,slot.SoundTrack).Length;
+    gain*=mix.Gain(slot.Track)*(IncludesTimeline?1:AudioInstrumentFade.Gain(slot.Instrument,mix.Position-slot.StartTime,duration));
    }
-   return gain;
-  }).ToArray();
+   gains[index]=gain;
+  }
+  return gains;
  }
 }

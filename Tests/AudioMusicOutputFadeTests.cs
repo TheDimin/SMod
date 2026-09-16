@@ -33,6 +33,34 @@ public sealed partial class AudioEventTests
   Assert.IsFalse(runtime.IsRunning);Assert.IsFalse(stop.IsCompleted);
   output.FadeCompletion.SetResult(true);tick.SetResult(true);await stop;Assert.AreEqual(1,output.Disposals);Assert.IsTrue(runtime.IsStopped);
  }
+ [TestMethod] public async Task MusicRuntime_StalledFadeReportsFailureAndReleasesOutput()
+ {
+  var output=new MusicOutputFake();
+  using var runtime=new AudioMusicRuntimeSession(output,()=>{System.Threading.Thread.Sleep(10);return Task.CompletedTask;});
+  runtime.StartPrepared(new AudioBeatGrid{End=new(2.4),BeatsPerMinute=100},CreateSoundEvent().Tracks[0].Sound,new short[211680],1);
+  await Assert.ThrowsExactlyAsync<TimeoutException>(()=>runtime.StopWithFadeAsync(.001f));
+  Assert.IsTrue(runtime.IsStopped);Assert.AreEqual(1,output.Disposals);
+  Assert.AreEqual(0L,runtime.ResidentBytes);Assert.IsNull(runtime.TrySchedule(null,null,1,1));
+  runtime.Dispose();Assert.AreEqual(1,output.Disposals);
+ }
+ [TestMethod] public async Task MusicRuntime_StoppedNativeOutputClosesWithoutWaitingForFade()
+ {
+  var output=new MusicOutputFake();var tick=new TaskCompletionSource<bool>();
+  using var runtime=new AudioMusicRuntimeSession(output,()=>tick.Task);
+  runtime.StartPrepared(new AudioBeatGrid{End=new(2.4),BeatsPerMinute=100},CreateSoundEvent().Tracks[0].Sound,new short[211680],1);
+  var stop=runtime.StopWithFadeAsync(.5f);
+  output.IsStopped=true;tick.SetResult(true);await stop;
+  Assert.IsFalse(output.FadeCompletion.Task.IsCompleted,"The lost output never acknowledged a fade.");
+  Assert.IsTrue(runtime.IsStopped);Assert.AreEqual(1,output.Disposals);Assert.AreEqual(0L,runtime.ResidentBytes);
+ }
+ [TestMethod] public async Task MusicRuntime_DisposeDuringFadeDoesNotReportTimeout()
+ {
+  var output=new MusicOutputFake();var tick=new TaskCompletionSource<bool>();
+  using var runtime=new AudioMusicRuntimeSession(output,()=>tick.Task);
+  runtime.StartPrepared(new AudioBeatGrid{End=new(2.4),BeatsPerMinute=100},CreateSoundEvent().Tracks[0].Sound,new short[211680],1);
+  var stop=runtime.StopWithFadeAsync(.5f);runtime.Dispose();tick.SetResult(true);await stop;
+  Assert.IsTrue(runtime.IsStopped);Assert.AreEqual(1,output.Disposals);
+ }
  [TestMethod] public void MusicFade_RejectsInvalidDurations()
  {
   var gain=new AudioMusicOutputGain();

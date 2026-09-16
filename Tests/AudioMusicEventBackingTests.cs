@@ -8,6 +8,7 @@ public sealed partial class AudioEventTests
   instrument.FadeInDuration=1;instrument.FadeInCurveMidpoint=.2f;
   instrument.FadeOutDuration=1;instrument.FadeOutCurveMidpoint=.8f;
   var parameters=new Dictionary<AudioParameter,AudioParameterValue>();
+  AudioEventValidator.Validate(e).AssertValid();
   var backing=new AudioMusicEventBacking(e,new AudioBeatGrid{End=new(2.4),BeatsPerMinute=100},parameters);
   var instance=AudioSystem.GetEvent(e).CreateInstance();instance.Volume=.7f;instance.Start();
   try
@@ -31,22 +32,26 @@ public sealed partial class AudioEventTests
  {
   var e=CreateEvent();var instrument=e.MasterTrack.Instruments[0];instrument.TrimEnd=2.4f;
   var values=new Dictionary<AudioParameter,AudioParameterValue>();
+  AudioEventValidator.Validate(e).AssertValid();
   var backing=new AudioMusicEventBacking(e,new AudioBeatGrid{End=new(2.4),BeatsPerMinute=100},values);
   var gains=new Dictionary<AudioTrack,float>{{e.MasterTrack,.25f}};
   var mix=new AudioMusicMixState(1.2f,gains);gains[e.MasterTrack]=0;
   Assert.AreEqual(backing.EvaluateGains(values)[0]*.25f,backing.EvaluateGains(values,mix)[0],.00001f);
   Assert.ThrowsExactly<ArgumentOutOfRangeException>(()=>new AudioMusicMixState(float.NaN));
-  Assert.ThrowsExactly<ArgumentOutOfRangeException>(()=>new AudioMusicMixState(0,new Dictionary<AudioTrack,float>{{e.MasterTrack,2}}));
+  Assert.AreEqual(2f,new AudioMusicMixState(0,new Dictionary<AudioTrack,float>{{e.MasterTrack,2}}).Gain(e.MasterTrack));
+  Assert.ThrowsExactly<ArgumentOutOfRangeException>(()=>new AudioMusicMixState(0,new Dictionary<AudioTrack,float>{{e.MasterTrack,-1}}));
+  Assert.ThrowsExactly<ArgumentOutOfRangeException>(()=>new AudioMusicMixState(0,new Dictionary<AudioTrack,float>{{e.MasterTrack,float.NaN}}));
  }
  [TestMethod] public void MusicEventBacking_WorldFactsChangeGainsWithoutChangingSources()
  {
   var e=CreateEvent();var pressure=new AudioParameter{Name="Pressure",Minimum=0,Maximum=1};e.Parameters.Add(pressure);
   e.MasterTrack.Instruments[0].TrimEnd=2.4f;
-  var instrument=new AudioInstrument{Sound=CreateSoundEvent(),TrimEnd=2.4f};
+  var instrument=AddSourceInstrument(e, i => i.TrimEnd=2.4f);
   e.Tracks.Add(new(){Name="Busy keys",Instruments=new(){instrument},
    Conditions=new(){new(){Parameter=pressure,Minimum=.5f,Maximum=1}},
    Automations=new(){new(){Parameter=pressure,Points=new(){new(){Input=0,Output=0},new(){Input=1,Output=.5f}}}}});
   var values=new Dictionary<AudioParameter,AudioParameterValue>{{pressure,new(0,null,false)}};
+  AudioEventValidator.Validate(e).AssertValid();
   var binding=new AudioMusicEventBacking(e,new AudioBeatGrid{End=new(2.4),BeatsPerMinute=100},values);
   Assert.AreEqual(2,binding.Parts.Count,"Initially inactive parts must still be prepared.");
   CollectionAssert.AreEqual(new float[]{1,0},binding.EvaluateGains(values));
@@ -60,9 +65,10 @@ public sealed partial class AudioEventTests
  [TestMethod] public void MusicEventBacking_ExcludesShortPhrasesAndRejectsPitchChanges()
  {
   var e=CreateEvent();e.MasterTrack.Instruments[0].TrimEnd=2.4f;
-  e.Tracks.Add(new(){Instruments=new(){new(){Sound=CreateSoundEvent(),TrimEnd=.6f}}});
+  e.Tracks.Add(new(){Name="Short",Instruments=new(){AddSourceInstrument(e, i => i.TrimEnd=.6f)}});
   var grid=new AudioBeatGrid{End=new(2.4),BeatsPerMinute=100};
   var values=new Dictionary<AudioParameter,AudioParameterValue>();
+  AudioEventValidator.Validate(e).AssertValid();
   Assert.AreEqual(1,new AudioMusicEventBacking(e,grid,values).Parts.Count);
   e.MasterTrack.Pitch=.9f;
   Assert.ThrowsExactly<InvalidOperationException>(()=>new AudioMusicEventBacking(e,grid,values));

@@ -200,6 +200,17 @@ internal sealed class AudioTimelineControlEvaluator
             }
             else { _fadeInStart = -1; _fadeInSamples = 0; }
             var overshoot = Math.Max( 0, end - decision.Value.ExecutionSample );
+            // A shared composition has already looped in the sample renderer.
+            // Fold missed cycles once; do not replay old triggers or seek the audio.
+            if ( _event.SharedMusicOutput && decision.Value.IsLoop
+                && _event.TransitionMarkers.Count == 0 && _regions.Count == 0
+                && _event.LoopRegions.Count == 1
+                && _event.LoopRegions[0].EndMode == LoopEndMode.Fixed
+                && _event.LoopRegions[0].Conditions.Conditions.Count == 0 )
+            {
+                var length = decision.Value.ExecutionSample - decision.Value.DestinationSample;
+                if ( length > 0 ) overshoot %= length;
+            }
 			start = decision.Value.DestinationSample;
 			end = checked(start + overshoot);
 			jumps++;

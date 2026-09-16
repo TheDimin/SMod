@@ -28,16 +28,18 @@ internal static class AudioInstrumentFade
 internal sealed class AudioMusicMixState
 {
  readonly Dictionary<AudioTrack,float> gains;
+ readonly HashSet<AudioTrack> blockedTails;
+ public bool TailAllowed(AudioTrack track)=>blockedTails?.Contains(track)!=true;
  public float Position {get;}
- public AudioMusicMixState(float position,IReadOnlyDictionary<AudioTrack,float> trackGains=null)
+ public AudioMusicMixState(float position,IReadOnlyDictionary<AudioTrack,float> trackGains=null,IEnumerable<AudioTrack> blockedTails=null)
  {
   if(!float.IsFinite(position)||position<0)throw new ArgumentOutOfRangeException(nameof(position));
-  Position=position;gains=new();
+  Position=position;gains=new();this.blockedTails=new(blockedTails??Enumerable.Empty<AudioTrack>());
   if(trackGains is null)return;
   foreach(var item in trackGains)
   {
    ArgumentNullException.ThrowIfNull(item.Key);
-   if(!float.IsFinite(item.Value)||item.Value<0||item.Value>1)throw new ArgumentOutOfRangeException(nameof(trackGains));
+   if(!float.IsFinite(item.Value)||item.Value<0)throw new ArgumentOutOfRangeException(nameof(trackGains));
    gains.Add(item.Key,item.Value);
   }
  }

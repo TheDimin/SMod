@@ -27,8 +27,9 @@ public sealed partial class AudioEventTests
  [TestMethod] public void TimelineBinding_IncludesShortDrumsAndLeavesFadeForTheSampleRenderer()
  {
   var e=CreateEvent();e.MasterTrack.Instruments[0].TrimEnd=2.4f;
-  var drum=new AudioInstrument{Sound=CreateSoundEvent(),StartTime=.6f,TrimEnd=.6f,FadeInDuration=.1f};
+  var drum=AddSourceInstrument(e, instrument => { instrument.StartTime=.6f;instrument.TrimEnd=.6f;instrument.FadeInDuration=.1f; });
   e.Tracks.Add(new(){Name="Drums",Instruments=new(){drum}});
+  AudioEventValidator.Validate(e).AssertValid();
   var binding=new AudioMusicEventBacking(e,new AudioBeatGrid{End=new(2.4),BeatsPerMinute=100},new Dictionary<AudioParameter,AudioParameterValue>(),includeTimeline:true);
   Assert.AreEqual(2,binding.Parts.Count);Assert.AreSame(drum,binding.Parts[1].Instrument);
   Assert.AreEqual(1f,binding.EvaluateGains(new Dictionary<AudioParameter,AudioParameterValue>(),new AudioMusicMixState(0))[1],"The sample renderer applies the future clip fade; frame updates must not suppress its first samples.");

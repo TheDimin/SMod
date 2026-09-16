@@ -59,7 +59,7 @@ public static class AudioMusicRuntimeNativeCheck
   var parameters=resource.Parameters.ToDictionary(p=>p,p=>p.Type==AudioParameterType.Labeled
    ?new AudioParameterValue(0,p.DefaultLabel,true):new AudioParameterValue(p.DefaultValue,null,false));
   var binding=new AudioMusicEventBacking(resource,grid,parameters);
-  var sources=binding.Parts.Select(part=>part.Source.Sound.ResourcePath).ToArray();
+  var sources=binding.Parts.Select(part=>part.Source?.Sound?.ResourcePath ?? string.Empty).ToArray();
   var output=new SboxMusicOutput();var runtime=new AudioMusicRuntimeSession(output,maximumBytes:AudioMusicEventPlayback.DefaultPreparationBudgetBytes);
   using var owner=new AudioMusicEventPlayback(resource,()=>runtime){Volume=0};
   var timer=System.Diagnostics.Stopwatch.StartNew();
@@ -75,11 +75,16 @@ public static class AudioMusicRuntimeNativeCheck
    Sandbox.Audio.Mixer.Default.Mute,Sandbox.Audio.Mixer.Master.Mute,carrierTime),binding.Parts.Count,bytes,preparationMs,sources);
  }
  public sealed record Result(bool Started,bool ClockAdvancedWhileMuted,bool PauseHeld,bool Resumed,bool MixerRemoved,long ResidentAfterStop,string DefaultMixer,bool DefaultMuted,bool MasterMuted,float CarrierTime);
- public static async Task<Result> Run(AudioBeatGrid grid,AudioTrack master,AudioTrack track)
+ static SoundEventTrack AudioSourceRuntimeForEditor(AudioEvent resource,AudioInstrument instrument)
+ {
+  var source=resource.Sources?.SingleOrDefault(candidate=>candidate?.Id==instrument.SourceId);
+  return source?.Tracks?.SingleOrDefault(track=>track?.Sound is not null) ?? throw new InvalidOperationException("The instrument must reference one graph-owned source track.");
+ }
+ public static async Task<Result> Run(AudioEvent resource,AudioBeatGrid grid,AudioTrack master,AudioTrack track)
  {
   var output=new SboxMusicOutput();using var runtime=new AudioMusicRuntimeSession(output);
   runtime.Volume=0;
-  var instrument=track.Instruments.Single();var source=instrument.Sound.Tracks.Single();
+  var instrument=track.Instruments.Single();var source=AudioSourceRuntimeForEditor(resource,instrument);
   var started=await runtime.StartAsync(grid,instrument,source,master.Tone,track.Tone,.1f);
   var id=output.MixerId;
   var timeout=System.Diagnostics.Stopwatch.StartNew();

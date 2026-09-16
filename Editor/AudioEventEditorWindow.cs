@@ -674,7 +674,7 @@ public sealed partial class AudioEventEditorWindow : DockWindow, IAssetEditor, A
 
 		ExecuteResourceAction( $"Add Sliced Multi-Instrument ({validSlices.Length} variations)", _event, () =>
 		{
-			var soundEvent = new SoundEventResource
+			var sourceDefinition = new AudioSourceDefinition
 			{
 				Tracks = validSlices.Select( slice => new SoundEventTrack
 				{
@@ -683,13 +683,14 @@ public sealed partial class AudioEventEditorWindow : DockWindow, IAssetEditor, A
 					Length = slice.Length
 				} ).ToList()
 			};
-			soundEvent.EmbeddedResource = new Sandbox.Resources.EmbeddedResource { ResourceCompiler = "embed" };
 			track.Instruments ??= new();
-			track.Instruments.Add( new AudioInstrument
+			var instrument = new AudioInstrument
 			{
-				Sound = soundEvent,
+				SourceId = sourceDefinition.Id,
 				StartTime = MathF.Max( 0f, startTime ).SnapToGrid( 0.01f )
-			} );
+			};
+			track.Instruments.Add( instrument );
+			AudioSourceAuthoring.Add( _event, instrument, sourceDefinition );
 		} );
 	}
 
@@ -705,33 +706,32 @@ public sealed partial class AudioEventEditorWindow : DockWindow, IAssetEditor, A
 		ExecuteResourceAction( validSounds.Length == 1 ? "Add Audio Instrument" : "Add Audio Multi-Instrument", _event, () =>
 		{
 			track.Instruments ??= new();
-			track.Instruments.Add( new AudioInstrument
+			var sourceDefinition = AudioSoundEventFactory.CreateSource( validSounds );
+			var instrument = new AudioInstrument
 			{
-				Sound = CreateEmbeddedSoundEvent( validSounds ),
+				SourceId = sourceDefinition.Id,
 				StartTime = MathF.Max( 0f, startTime ).SnapToGrid( 0.01f )
-			} );
+			};
+			track.Instruments.Add( instrument );
+			AudioSourceAuthoring.Add( _event, instrument, sourceDefinition );
 		} );
 	}
 	internal void AddSoundsToInstrument( AudioInstrument instrument, IReadOnlyList<SoundFile> sounds )
 	{
-		if ( instrument?.Sound is null || sounds is null || !EnumerateInstruments().Contains( instrument ) )
+		if ( instrument is null || sounds is null || !EnumerateInstruments().Contains( instrument ) )
 			return;
 		var validSounds = sounds.Where( sound => sound.IsValid() ).ToArray();
 		if ( validSounds.Length == 0 )
 			return;
 
-		var soundEvent = instrument.Sound;
-		GameResource owner = soundEvent.EmbeddedResource is not null ? _event : soundEvent;
-		ExecuteResourceAction( validSounds.Length == 1 ? "Add Sound Variation" : "Add Sound Variations", owner, () =>
+		var sourceDefinition = AudioSourceAuthoring.Resolve( _event, instrument );
+		if ( sourceDefinition is null )
+			return;
+		ExecuteResourceAction( validSounds.Length == 1 ? "Add Sound Variation" : "Add Sound Variations", _event, () =>
 		{
-			soundEvent.Tracks ??= new();
-			soundEvent.Tracks.AddRange( validSounds.Select( sound => new SoundEventTrack { Sound = sound } ) );
+			sourceDefinition.Tracks ??= new();
+			sourceDefinition.Tracks.AddRange( validSounds.Select( sound => new SoundEventTrack { Sound = sound } ) );
 		} );
-	}
-
-	internal static SoundEventResource CreateEmbeddedSoundEvent( IReadOnlyList<SoundFile> sounds )
-	{
-		return AudioSoundEventFactory.CreateEmbedded( sounds );
 	}
 internal void RemoveInstrument( AudioTrack track, AudioInstrument instrument )
 	{
@@ -750,16 +750,25 @@ internal void RemoveInstrument( AudioTrack track, AudioInstrument instrument )
 		{
 			duplicate = new AudioInstrument
 			{
-				Sound = instrument.Sound,
+				StopTriggerConditions = instrument.StopTriggerConditions.Select(c=>new AudioParameterCondition{Parameter=c.Parameter,Minimum=c.Minimum,Maximum=c.Maximum,Invert=c.Invert,Label=c.Label}).ToList(),
+				StartTriggerConditions = instrument.StartTriggerConditions.Select(c=>new AudioParameterCondition{Parameter=c.Parameter,Minimum=c.Minimum,Maximum=c.Maximum,Invert=c.Invert,Label=c.Label}).ToList(),
+				SourceId = instrument.SourceId,
 				Name = instrument.Name,
 				SubEventSelection = instrument.SubEventSelection,
 				SubEventQuantization = instrument.SubEventQuantization,
                 RotateSubEventsAtEnd = instrument.RotateSubEventsAtEnd,
+                RetainSubEventPositionOnTimelineJump=instrument.RetainSubEventPositionOnTimelineJump,
+                SubEventExitFadeSeconds=instrument.SubEventExitFadeSeconds,
+                LayerControl=instrument.LayerControl?.Copy(),
+                TriggerDelaySeconds=instrument.TriggerDelaySeconds,
+                OverlayBodySeconds=instrument.OverlayBodySeconds,
+                AllowReleaseTailAcrossLoop=instrument.AllowReleaseTailAcrossLoop,
                 SubEventTransitionBeats = instrument.SubEventTransitionBeats,
-				SubEvents = instrument.SubEvents?.Select( choice => new AudioSubEventChoice { Event = choice.Event,
+				SubEvents = instrument.SubEvents?.Select( choice => new AudioSubEventChoice { Event = choice.Event, ExitEvent=choice.ExitEvent, ExitEventOverlapSeconds=choice.ExitEventOverlapSeconds, ResumePlayback=choice.ResumePlayback, EntryQuantization=choice.EntryQuantization, EntryFadeBeats=choice.EntryFadeBeats, EntryCrossfadeSeconds=choice.EntryCrossfadeSeconds, EntryAfterInstrument=choice.EntryAfterInstrument,
+                    EarlyEntryConditions=choice.EarlyEntryConditions.Select(c=>new AudioParameterCondition{Parameter=c.Parameter,Minimum=c.Minimum,Maximum=c.Maximum,Invert=c.Invert,Label=c.Label}).ToList(),
 					Conditions = choice.Conditions.Select( condition => new AudioParameterCondition { Parameter = condition.Parameter,
 						Minimum = condition.Minimum, Maximum = condition.Maximum, Label = condition.Label, Invert = condition.Invert } ).ToList() } ).ToList() ?? new(),
-				StartTime = instrument.StartTime + AudioTimelineView.EstimateDuration( instrument ),
+				StartTime = instrument.StartTime + AudioTimelineView.EstimateDuration( instrument, _event?.BeatGrids?.FirstOrDefault()?.BeatsPerMinute ?? 120d, _event ),
 				TrimStart = instrument.TrimStart,
 				TrimEnd = instrument.TrimEnd,
 				Conditions = instrument.Conditions?.Select( condition => new AudioParameterCondition
@@ -1087,7 +1096,7 @@ internal void RemoveInstrument( AudioTrack track, AudioInstrument instrument )
 		InsertUndo( "Edit Audio Property", owner, before, after );
 		_lastStates[owner] = after;
 		UpdateDirtyState( owner );
-		RefreshAfterMutation( owner is SoundEvent );
+		RefreshAfterMutation( owner is SoundEvent || _selection is AudioSourceDefinition );
 	}
 
 	private void ExecuteResourceAction( string title, GameResource resource, Action mutation, Action targetedRefresh = null )
@@ -1238,24 +1247,6 @@ internal void RemoveInstrument( AudioTrack track, AudioInstrument instrument )
 		return string.IsNullOrWhiteSpace( resource.ResourcePath ) ? null : AssetSystem.FindByPath( resource.ResourcePath );
 	}
 
-	internal void OpenSoundAsset( SoundEventResource sound )
-	{
-		if ( sound is null )
-			return;
-		var asset = ResolveAsset( sound );
-		if ( asset is not null )
-			asset.OpenInEditor();
-	}
-
-	internal void InspectSoundAsset( SoundEventResource sound )
-	{
-		if ( sound is null )
-			return;
-		var asset = ResolveAsset( sound );
-		if ( asset is not null )
-			EditorUtility.InspectorObject = asset;
-	}
-
 	internal void OpenSoundAsset( SoundFile sound )
 	{
 		AssetSystem.FindByPath( sound?.ResourcePath )?.OpenInEditor();
@@ -1281,8 +1272,7 @@ internal void RemoveInstrument( AudioTrack track, AudioInstrument instrument )
 			AudioWaveformSourceCache.Invalidate( asset.RelativePath );
 		if ( asset is null || _saving )
 			return;
-		if ( _event is not null && EnumerateInstruments()
-			.SelectMany( instrument => instrument.Sound?.Tracks ?? new() )
+		if ( _event is not null && EnumerateSourceTracks()
 			.Any( track => string.Equals( AudioWaveformSourceCache.Key( track.Sound ), asset.RelativePath, StringComparison.OrdinalIgnoreCase ) ) )
 		{
 			ReloadUi();
@@ -1297,15 +1287,6 @@ internal void RemoveInstrument( AudioTrack track, AudioInstrument instrument )
 			return;
 		}
 
-		var sound = _savedStates.Keys.OfType<SoundEventResource>().FirstOrDefault( candidate => ResolveAsset( candidate ) == asset );
-		if ( sound is not null )
-		{
-			if ( _dirtyResources.Contains( sound ) )
-				PromptForExternalReload( asset, sound );
-			else
-				ReloadSoundAsset( asset, sound );
-			return;
-		}
 
 		var parameter = _event.Parameters?.FirstOrDefault( candidate => ResolveAsset( candidate ) == asset );
 		if ( parameter is null )
@@ -1328,8 +1309,6 @@ internal void RemoveInstrument( AudioTrack track, AudioInstrument instrument )
 				{
 					if ( ReferenceEquals( resource, _event ) )
 						ReloadEventAsset( asset );
-					else if ( resource is SoundEventResource sound )
-						ReloadSoundAsset( asset, sound );
 					else if ( resource is AudioParameter parameter )
 						ReloadParameterAsset( asset, parameter );
 				}
@@ -1350,27 +1329,6 @@ internal void RemoveInstrument( AudioTrack track, AudioInstrument instrument )
 		}
 		_event = replacement;
 		RegisterResource( _event );
-		_selection = _event;
-		ReloadUi();
-		UpdateWindowTitle();
-	}
-
-	private void ReloadSoundAsset( Asset asset, SoundEventResource previous )
-	{
-		DisposePreview( false );
-		_dirtyResources.Remove( previous );
-		_savedStates.Remove( previous );
-		_lastStates.Remove( previous );
-		var replacement = asset.LoadResource<SoundEventResource>();
-		if ( replacement is not null )
-		{
-			foreach ( var instrument in EnumerateInstruments() )
-			{
-				if ( ReferenceEquals( instrument.Sound, previous ) )
-					instrument.Sound = replacement;
-			}
-			RegisterResource( replacement );
-		}
 		_selection = _event;
 		ReloadUi();
 		UpdateWindowTitle();
@@ -1425,14 +1383,15 @@ internal void RemoveInstrument( AudioTrack track, AudioInstrument instrument )
 
  internal async Task<object> CheckTimelineZoomAsync()
  {
-  var sources=EnumerateInstruments().SelectMany(i=>i.Sound?.Tracks ?? new()).Select(t=>t.Sound).Where(s=>s.IsValid()).Distinct().ToArray();
+  var sources=EnumerateSourceTracks().Select(t=>t.Sound).Where(s=>s.IsValid()).Distinct().ToArray();
   await Task.WhenAll(sources.Select(AudioWaveformSourceCache.LoadAsync));
+  await Task.Delay(100); // Let the opened dock receive its real viewport geometry.
   return _workspace.CheckTimelineZoom();
  }
 
 	internal async System.Threading.Tasks.Task<object> CheckWaveformReloadAsync()
 	{
-		var sources = EnumerateInstruments().SelectMany( instrument => instrument.Sound?.Tracks ?? new() )
+		var sources = EnumerateSourceTracks()
 			.Select( track => track.Sound ).Where( sound => sound.IsValid() )
 			.GroupBy( AudioWaveformSourceCache.Key ).Select( group => group.First() ).ToArray();
 		await System.Threading.Tasks.Task.WhenAll( sources.Select( AudioWaveformSourceCache.LoadAsync ) );
@@ -1444,6 +1403,13 @@ internal void RemoveInstrument( AudioTrack track, AudioInstrument instrument )
 		return new { Event = _event.ResourcePath, Sources = sources.Length, ReloadMilliseconds = watch.Elapsed.TotalMilliseconds,
 			AdditionalDecodes = AudioWaveformSourceCache.DecodeCount - decodes,
 			CacheHits = AudioWaveformSourceCache.CacheHits - hits, CachedBytes = AudioWaveformSourceCache.CachedBytes };
+	}
+
+	private IEnumerable<SoundEventTrack> EnumerateSourceTracks()
+	{
+		return _event?.Sources?.Where( source => source is not null )
+			.SelectMany( source => source.Tracks ?? new List<SoundEventTrack>() )
+			.Where( track => track is not null ) ?? Enumerable.Empty<SoundEventTrack>();
 	}
 
 	private IEnumerable<AudioInstrument> EnumerateInstruments()
@@ -1965,6 +1931,9 @@ internal sealed class AudioTimelineView : GraphicsView
 	internal int SubGraphBlockCount => _items.OfType<AudioInstrumentBlockItem>().Count( block => block.Instrument.IsSubEvent );
 	internal IReadOnlyList<AudioTimelineTrackLayout> TrackLayouts => _trackLayouts;
 	internal int ReorderTargetRegularIndex => _reorderTargetRegularIndex;
+	internal double MusicBeatsPerMinute => _event?.BeatGrids?.FirstOrDefault()?.BeatsPerMinute ?? 120d;
+	internal AudioEvent Event => _event;
+
 	public float PixelsPerSecond
 	{
 		get => _pixelsPerSecond;
@@ -2028,15 +1997,16 @@ internal sealed class AudioTimelineView : GraphicsView
 		}
 	}
 
+    private AudioLiveSnapshot _lastLiveOverlay;
 	public void UpdateLiveOverlay(AudioLiveSnapshot snapshot)
     {
+        _lastLiveOverlay=snapshot;
         var voices=snapshot?.Voices.ToLookup(voice=>voice.InstrumentId);
         foreach(var block in _items.OfType<AudioInstrumentBlockItem>())
         {
             var rows=voices?[block.Instrument.Id].ToArray() ?? Array.Empty<AudioLiveVoice>();
-            var live=block.SetLiveStates(rows);
-            if(_event.Tracks.Any(x=>x.Overlay?.Enabled==true && x.Instruments.Contains(block.Instrument)))
-                block.Position=new Vector2(PositionFromTime(live is not null && live.State!="Inactive" ? live.Start : block.Instrument.StartTime),block.Position.y);
+            block.SetLiveStates(rows);
+            // Authored blocks stay fixed. Live voices use the existing gain/progress overlay.
         }
     }
 
@@ -2215,7 +2185,7 @@ internal sealed class AudioTimelineView : GraphicsView
 	{
 		_audioContentEnd = _trackLayouts.SelectMany( layout => layout.Track.Instruments ?? new List<AudioInstrument>() )
 			.Where( instrument => instrument is not null )
-			.Select( instrument => instrument.StartTime + EstimateDuration( instrument ) ).DefaultIfEmpty().Max();
+			.Select( instrument => instrument.StartTime + EstimateDuration( instrument, MusicBeatsPerMinute, _event ) ).DefaultIfEmpty().Max();
 		var authoredDuration = _audioContentEnd;
 		authoredDuration = MathF.Max( authoredDuration, (float)(_event.DestinationMarkers?.Select( marker => marker?.Position.Seconds ?? 0d ).DefaultIfEmpty().Max() ?? 0d) );
 		authoredDuration = MathF.Max( authoredDuration, (float)(_event.TransitionMarkers?.Select( marker => marker?.Position.Seconds ?? 0d ).DefaultIfEmpty().Max() ?? 0d) );
@@ -2235,11 +2205,11 @@ internal sealed class AudioTimelineView : GraphicsView
 			PositionFromTime( block.Instrument.StartTime ),
 			layout.Top + 8f + lane.Index * (laneHeight + gap) );
 		block.Resize( new Vector2(
-			MathF.Max( 28f, EstimateDuration( block.Instrument ) * _pixelsPerSecond ),
+			MathF.Max( 28f, EstimateDuration( block.Instrument, MusicBeatsPerMinute, _event ) * _pixelsPerSecond ),
 			laneHeight ) );
 	}
 
-	private static Dictionary<AudioInstrument, AudioInstrumentLane> CalculateInstrumentLanes( AudioTrack track )
+	private Dictionary<AudioInstrument, AudioInstrumentLane> CalculateInstrumentLanes( AudioTrack track )
 	{
 		var result = new Dictionary<AudioInstrument, AudioInstrumentLane>( ReferenceEqualityComparer.Instance );
 		var ordered = track.Instruments?
@@ -2247,7 +2217,7 @@ internal sealed class AudioTimelineView : GraphicsView
 			.Select( instrument => (
 				Instrument: instrument,
 				Start: instrument.StartTime,
-				End: instrument.StartTime + EstimateDuration( instrument ) ) )
+				End: instrument.StartTime + EstimateDuration( instrument, MusicBeatsPerMinute, _event ) ) )
 			.OrderBy( entry => entry.Start )
 			.ThenBy( entry => entry.End )
 			.ToArray() ?? Array.Empty<(AudioInstrument Instrument, float Start, float End)>();
@@ -2549,7 +2519,7 @@ internal sealed class AudioTimelineView : GraphicsView
   var samples=new List<object>();
   try
   {
-   foreach(var scale in new[]{100f,150f,100f})
+   foreach(var scale in new[]{25f,100f,150f,100f})
    {
     var watch=System.Diagnostics.Stopwatch.StartNew();
     ApplyTimelineScale(scale);CenterOn(new Vector2(PositionFromTime(0),originalCenter.y));
@@ -2562,7 +2532,13 @@ internal sealed class AudioTimelineView : GraphicsView
     }
     samples.Add(new{Scale=scale,Milliseconds=watch.Elapsed.TotalMilliseconds,TileBytes=bytes,VisibleBlocks=blocks});
    }
-   return new{Event=_event.ResourcePath,ViewportWidth=Width,Samples=samples};
+   var restoreOverlay=_lastLiveOverlay;
+   var blocksBefore=_items.OfType<AudioInstrumentBlockItem>().ToDictionary(b=>b,b=>(b.Position,b.Instrument.StartTime));
+   var simulated=blocksBefore.Keys.Select(b=>new AudioLiveVoice(b.Track.Name,AudioSourceAuthoring.Resolve(_event,b.Instrument)?.Tracks?.Select(t=>t?.Sound).FirstOrDefault(sound=>sound.IsValid())?.ResourcePath,"Playing",.25f,1,.2f,b.Instrument.StartTime+15,b.Instrument.StartTime+16,InstrumentId:b.Instrument.Id)).ToArray();
+   UpdateLiveOverlay(new AudioLiveSnapshot(Guid.NewGuid(),_event.ResourcePath,"Playing",1,1,null,null,0,0,_duration,100,Array.Empty<AudioLiveParameter>(),simulated));
+   var fixedBlocks=blocksBefore.All(pair=>pair.Key.Position==pair.Value.Position && pair.Key.Instrument.StartTime==pair.Value.StartTime);
+   UpdateLiveOverlay(restoreOverlay);
+   return new{Event=_event.ResourcePath,ViewportWidth=Width,Samples=samples,LiveOverlayKeepsAuthoredPositions=fixedBlocks,CheckedBlocks=blocksBefore.Count};
   }
   finally{ApplyTimelineScale(originalScale);CenterOn(originalCenter);}
  }
@@ -2600,7 +2576,7 @@ internal sealed class AudioTimelineView : GraphicsView
 		foreach ( var block in _items.OfType<AudioInstrumentBlockItem>() )
 		{
 			block.Position = block.Position.WithX( PositionFromTime( block.Instrument.StartTime ) );
-			block.Resize( block.Size.WithX( MathF.Max( 28f, EstimateDuration( block.Instrument ) * _pixelsPerSecond ) ) );
+			block.Resize( block.Size.WithX( MathF.Max( 28f, EstimateDuration( block.Instrument, MusicBeatsPerMinute, _event ) * _pixelsPerSecond ) ) );
 		}
 		foreach ( var marker in _items.OfType<AudioTimelineMarkerItem>() )
 		{
@@ -2679,7 +2655,7 @@ internal sealed class AudioTimelineView : GraphicsView
 		SelectInstrument( instrument );
 
 		var menu = new ContextMenu( this );
-		menu.AddHeading( InstrumentName( instrument ) );
+		menu.AddHeading( InstrumentName( instrument, _event ) );
 		_window.AddGetPath( menu, instrument );
 		if ( instrument.IsSubEvent )
 		{
@@ -2687,6 +2663,7 @@ internal sealed class AudioTimelineView : GraphicsView
 			foreach ( var choice in instrument.SubEvents.Where( choice => choice?.Event is not null ) )
 			{
 				var child = choice.Event;
+                if(choice.ExitEvent is {} exit)menu.AddOption($"Edit Exit Passage: {exit.ResourceName}","open_in_new",()=>AudioEventEditorWindow.OpenChildEvent(exit.ResourcePath));
 				menu.AddOption( $"Edit Sub-graph: {child.ResourceName}", "open_in_new", () => AudioEventEditorWindow.OpenChildEvent( child.ResourcePath ) );
 			}
 			menu.AddOption( "Add Sub-graph Choice", "add", () => ShowSubEventPicker( track, instrument.StartTime, instrument ) );
@@ -2711,19 +2688,17 @@ internal sealed class AudioTimelineView : GraphicsView
 				instrument.TrimEnd = 0f;
 			} ) );
 		}
-		if ( instrument.Sound?.EmbeddedResource is not null )
+		var sourceDefinition = AudioSourceAuthoring.Resolve( _event, instrument );
+		if ( sourceDefinition is not null )
 		{
-			var soundFile = instrument.Sound.Tracks?.Select( track => track?.Sound ).FirstOrDefault( sound => sound.IsValid() );
+			menu.AddOption( "Edit Source / Variations", "tune", () => _window.SelectObject( sourceDefinition ) );
+			_window.AddGetPath( menu, sourceDefinition );
+			var soundFile = sourceDefinition.Tracks?.Select( track => track?.Sound ).FirstOrDefault( sound => sound.IsValid() );
 			if ( soundFile.IsValid() )
 			{
 				menu.AddOption( "Open Sound File", "open_in_new", () => _window.OpenSoundAsset( soundFile ) );
 				menu.AddOption( "Inspect Sound File", "manage_search", () => _window.InspectSoundAsset( soundFile ) );
 			}
-		}
-		else if ( instrument.Sound is not null )
-		{
-			menu.AddOption( "Open Sound Event", "open_in_new", () => _window.OpenSoundAsset( instrument.Sound ) );
-			menu.AddOption( "Inspect Sound Event", "manage_search", () => _window.InspectSoundAsset( instrument.Sound ) );
 		}
 
 		menu.AddSeparator();
@@ -3189,14 +3164,17 @@ internal sealed class AudioTimelineView : GraphicsView
 			_window.AddInstruments( _trackLayouts[trackIndex].Track, sounds, startTime );
 	}
 
-	internal static float EstimateDuration( AudioInstrument instrument )
+	internal static float EstimateDuration( AudioInstrument instrument, double beatsPerMinute = 120d, AudioEvent graph = null )
 	{
+		if ( instrument?.LayerControl is not null ) return Math.Max(1f,instrument.TrimEnd);
+		if ( instrument?.CompoundHits is { Count: > 0 } hits )
+			return (float)Math.Max( .01d, hits.Where( hit => hit is not null && hit.IsValid ).Select( hit => hit.BeatOffset * 60d / Math.Max( 20d, beatsPerMinute ) + hit.Length ).DefaultIfEmpty( .01d ).Max() );
 		if ( instrument?.IsSubEvent == true )
 			return MathF.Max( .01f, (instrument.TrimEnd > 0 ? instrument.TrimEnd : instrument.SubEvents.Select( choice => choice?.Event?.TimelineDuration ?? 0 ).DefaultIfEmpty( 1f ).Max()) - instrument.TrimStart );
-		var sound = instrument?.Sound;
-		if ( sound?.Tracks is null || sound.Tracks.Count == 0 )
+		var source = graph is null ? null : AudioSourceAuthoring.Resolve( graph, instrument );
+		if ( source?.Tracks is null || source.Tracks.Count == 0 )
 			return 1f;
-		var sourceDuration = MathF.Max( 0.1f, sound.Tracks
+		var sourceDuration = MathF.Max( 0.1f, source.Tracks
 			.Where( track => track?.Sound.IsValid() == true && track.Sound.IsLoaded )
 			.Select( track => track.Length > 0f ? track.Length : MathF.Max( 0f, track.Sound.Duration - track.Offset ) )
 			.DefaultIfEmpty( 1f )
@@ -3205,29 +3183,31 @@ internal sealed class AudioTimelineView : GraphicsView
 		return MathF.Max( 0.01f, trimEnd - MathF.Min( instrument.TrimStart, trimEnd ) );
 	}
 
-	internal static string InstrumentName( AudioInstrument instrument )
+	internal static string InstrumentName( AudioInstrument instrument, AudioEvent graph = null )
 	{
 		if ( !string.IsNullOrWhiteSpace( instrument?.Name ) ) return instrument.Name;
+		if ( instrument?.LayerControl is not null ) return "Parent music control";
 		if ( instrument?.IsSubEvent == true ) return $"Sub-graph ({instrument.SubEvents.Count} choices)";
-		var sound = instrument?.Sound;
-		if ( !string.IsNullOrWhiteSpace( sound?.ResourceName ) )
-			return sound.ResourceName;
-
-		var file = sound?.Tracks?.Select( track => track?.Sound ).FirstOrDefault( candidate => candidate.IsValid() );
+		var source = graph is null ? null : AudioSourceAuthoring.Resolve( graph, instrument );
+		var file = source?.Tracks?.Select( track => track?.Sound ).FirstOrDefault( candidate => candidate.IsValid() );
 		if ( file is null )
-			return "Missing Sound Event";
+			return instrument?.SourceId == Guid.Empty ? "Missing Audio Source" : $"Audio Source {instrument.SourceId:N}";
 		var assetName = AssetSystem.FindByPath( file.ResourcePath )?.Name;
-		return !string.IsNullOrWhiteSpace( assetName ) ? assetName : file.ResourceName ?? "Embedded Sound Event";
+		return !string.IsNullOrWhiteSpace( assetName ) ? assetName : file.ResourceName ?? $"Audio Source {instrument.SourceId:N}";
 	}
 
-	internal static string InstrumentDescription( AudioInstrument instrument )
+	internal static string InstrumentDescription( AudioInstrument instrument, AudioEvent graph = null )
 	{
+		if ( Smod.Editor.AudioTimelineInspectorUx.DescribeLayerControl(instrument) is {} controlDescription ) return controlDescription;
+		if ( instrument?.CompoundHits is { Count: > 0 } hits )
+			return "Drum set | beat offsets use the destination song tempo\n"
+				+ string.Join( "\n", hits.Select( (hit, index) => hit is null ? $"Hit {index + 1}: missing" : $"Hit {index + 1}: beat +{hit.BeatOffset:0.###} | source {hit.SourceOffset:0.###}-{hit.SourceOffset + hit.Length:0.###}s | gain {hit.Gain:0.###}" ) );
 		if ( instrument?.IsSubEvent == true ) return $"Sub-graph | {instrument.SubEventSelection} | inherits matching parent parameters\n{(instrument.RotateSubEventsAtEnd ? "Parent loops this node at each full song end.\n" : "")}Go To targets stay inside each event. Child events cannot control the parent or siblings.\n" + string.Join( "\n", instrument.SubEvents.Select( choice => choice?.Event?.ResourcePath ?? "Missing child" ) );
-		var sound = instrument?.Sound;
-		if ( !string.IsNullOrWhiteSpace( sound?.ResourcePath ) )
-			return sound.ResourcePath;
-		return sound?.Tracks?.Select( track => track?.Sound ).FirstOrDefault( file => file.IsValid() )?.ResourcePath ?? "Missing Sound Event";
+		var source = graph is null ? null : AudioSourceAuthoring.Resolve( graph, instrument );
+		var file = source?.Tracks?.Select( track => track?.Sound ).FirstOrDefault( candidate => candidate.IsValid() );
+		return file is not null ? file.ResourcePath : instrument?.SourceId == Guid.Empty ? "Missing Audio Source" : $"Audio Source {instrument.SourceId:N}";
 	}
+
 }
 
 internal sealed class AudioTimelineBackgroundItem : GraphicsItem
@@ -3565,15 +3545,13 @@ internal sealed class AudioEventInspectorWidget : Widget
 		if ( selection is null )
 			return;
 
-		_owner = selection is SoundEventResource { EmbeddedResource: not null }
-			? _window.Event
-			: selection as GameResource ?? _window.Event;
+		_owner = selection as GameResource ?? _window.Event;
 		var title = selection switch
 		{
 			AudioEvent => "Audio Event",
 			AudioTrack track => track.Name,
-			AudioInstrument audioInstrument => AudioTimelineView.InstrumentName( audioInstrument ),
-			SoundEventResource => "Sound Source / Variations",
+			AudioInstrument audioInstrument => AudioTimelineView.InstrumentName( audioInstrument, _window.Event ),
+			AudioSourceDefinition => "Audio Source / Variations",
 			AudioParameter parameter => parameter.Name,
 			_ => selection.GetType().Name
 		};
@@ -3583,8 +3561,6 @@ internal sealed class AudioEventInspectorWidget : Widget
 		_serialized.OnPropertyFinishEdit += OnPropertyFinishedEdit;
 		if ( selection is AudioParameter selectedParameter )
 			_window.RegisterReferencedResource( selectedParameter );
-		if ( selection is SoundEventResource selectedSound && selectedSound.EmbeddedResource is null )
-			_window.RegisterReferencedResource( selectedSound );
 		var sheet = new ControlSheet { IncludePropertyNames = true };
 		sheet.AddObject( _serialized, property => AudioTimelineInspectorUx.ShowInGenericSheet( selection, property.Name ) );
         if(selection is AudioTrack selectedTrack)
@@ -3617,20 +3593,17 @@ internal sealed class AudioEventInspectorWidget : Widget
 			_canvas.Layout.Add( new Label( referenceText ) { WordWrap = true } );
 		}
 
-		if ( selection is AudioInstrument instrument && instrument.Sound is not null )
+		if ( selection is AudioInstrument instrument && AudioSourceAuthoring.Resolve( _window.Event, instrument ) is { } sourceDefinition )
 		{
 			var soundHeader = _canvas.Layout.AddRow();
-			soundHeader.Add( new Label( "Sound Source / Variations" ), 1 );
-			switch ( AudioTimelineInspectorUx.ResolveSoundSourceAccess( instrument.Sound ) )
+			soundHeader.Add( new Label( "Audio Source / Variations" ), 1 );
+			var edit = soundHeader.Add( new Button( "Edit", "tune" ) );
+			edit.Clicked += () => _window.SelectObject( sourceDefinition );
+			var soundFile = sourceDefinition.Tracks?.Select( track => track?.Sound ).FirstOrDefault( sound => sound.IsValid() );
+			if ( soundFile.IsValid() )
 			{
-				case AudioSoundSourceAccess.EditEmbedded:
-					var edit = soundHeader.Add( new Button( "Edit", "tune" ) );
-					edit.Clicked += () => _window.SelectObject( instrument.Sound );
-					break;
-				case AudioSoundSourceAccess.OpenExternal:
-					var open = soundHeader.Add( new Button( "Open Asset", "open_in_new" ) );
-					open.Clicked += () => _window.OpenSoundAsset( instrument.Sound );
-					break;
+				var open = soundHeader.Add( new Button( "Open Asset", "open_in_new" ) );
+				open.Clicked += () => _window.OpenSoundAsset( soundFile );
 			}
 		}
 
@@ -4056,7 +4029,7 @@ internal sealed class AudioParameterSheetWidget : Widget
 			foreach ( var instrument in audioEvent.MasterTrack.Instruments?.Where( instrument => instrument is not null ) ?? Enumerable.Empty<AudioInstrument>() )
 			{
 				foreach ( var automation in instrument.Automations?.Where( automation => automation is not null && ReferenceEquals( automation.Parameter, parameter ) ) ?? Enumerable.Empty<AudioAutomation>() )
-					yield return ($"Master / {AudioTimelineView.InstrumentName( instrument )} / {automation.Target}", null, instrument, automation);
+					yield return ($"Master / {AudioTimelineView.InstrumentName( instrument, audioEvent )} / {automation.Target}", null, instrument, automation);
 			}
 		}
 		foreach ( var track in audioEvent.Tracks?.Where( track => track is not null ) ?? Enumerable.Empty<AudioTrack>() )
@@ -4066,7 +4039,7 @@ internal sealed class AudioParameterSheetWidget : Widget
 			foreach ( var instrument in track.Instruments?.Where( instrument => instrument is not null ) ?? Enumerable.Empty<AudioInstrument>() )
 			{
 				foreach ( var automation in instrument.Automations?.Where( automation => automation is not null && ReferenceEquals( automation.Parameter, parameter ) ) ?? Enumerable.Empty<AudioAutomation>() )
-					yield return ($"{track.Name} / {AudioTimelineView.InstrumentName( instrument )} / {automation.Target}", null, instrument, automation);
+					yield return ($"{track.Name} / {AudioTimelineView.InstrumentName( instrument, audioEvent )} / {automation.Target}", null, instrument, automation);
 			}
 		}
 	}
@@ -4078,7 +4051,7 @@ internal sealed class AudioParameterSheetWidget : Widget
 		foreach ( var instrument in audioEvent.MasterTrack?.Instruments?.Where( instrument => instrument is not null ) ?? Enumerable.Empty<AudioInstrument>() )
 		{
 			foreach ( var condition in instrument.Conditions?.Where( condition => condition is not null && ReferenceEquals( condition.Parameter, parameter ) ) ?? Enumerable.Empty<AudioParameterCondition>() )
-				yield return ($"Master / {AudioTimelineView.InstrumentName( instrument )}", condition);
+				yield return ($"Master / {AudioTimelineView.InstrumentName( instrument, audioEvent )}", condition);
 		}
 		foreach ( var track in audioEvent.Tracks?.Where( track => track is not null ) ?? Enumerable.Empty<AudioTrack>() )
 		{
@@ -4087,7 +4060,7 @@ internal sealed class AudioParameterSheetWidget : Widget
 			foreach ( var instrument in track.Instruments?.Where( instrument => instrument is not null ) ?? Enumerable.Empty<AudioInstrument>() )
 			{
 				foreach ( var condition in instrument.Conditions?.Where( condition => condition is not null && ReferenceEquals( condition.Parameter, parameter ) ) ?? Enumerable.Empty<AudioParameterCondition>() )
-					yield return ($"{track.Name} / {AudioTimelineView.InstrumentName( instrument )}", condition);
+					yield return ($"{track.Name} / {AudioTimelineView.InstrumentName( instrument, audioEvent )}", condition);
 			}
 		}
 	}

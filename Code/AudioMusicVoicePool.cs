@@ -15,7 +15,7 @@ internal sealed class AudioMusicRequestOwner
 	public float Gain
 	{
 		get=>System.Threading.Interlocked.CompareExchange(ref gain,0,0);
-		set {if(!float.IsFinite(value)||value<0||value>1)throw new ArgumentOutOfRangeException(nameof(value));System.Threading.Interlocked.Exchange(ref gain,value);}
+		set {if(!float.IsFinite(value)||value<0)throw new ArgumentOutOfRangeException(nameof(value));System.Threading.Interlocked.Exchange(ref gain,value);}
 	}
 	public bool CanBindSession( object value )
 	{

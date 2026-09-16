@@ -3,10 +3,17 @@ namespace Smod;
 /// <summary>A bank of phrases started by world facts on a compatible music bar.</summary>
 public sealed class AudioOverlayRule
 {
+ [Property, Description("Only a direct parent music control can request these phrases. Local activity and trigger counters are ignored.")] public bool ParentControlled { get; set; }
  [Property] public string VoiceGroup { get; set; } = "lead";
- [Property] public int QuantizationBeats { get; set; }
+ [Property] public double QuantizationBeats { get; set; }
+ /// <summary>Shared-output scheduling safety margin after source preparation; milliseconds, not acoustic latency.</summary>
+ [Property] public int SchedulingLeadMilliseconds { get; set; } = 60;
  [Property] public bool QueueWhilePlaying { get; set; } = true;
  [Property] public bool IgnoreTriggersDuringCooldown { get; set; }
+ /// <summary>Shared output only. One disables chaining; larger values bound success-triggered phrases.</summary>
+ [Property] public int MaximumChainPhrases { get; set; } = 1;
+ /// <summary>Silence in this voice group after the last chained source tail, in beats.</summary>
+ [Property] public float ChainRestBeats { get; set; } = 16;
  [Property] public bool Enabled { get; set; }
  [Property, InlineEditor] public ParameterConditionSet Conditions { get; set; } = new();
  [Property] public AudioParameter TriggerParameter { get; set; }
@@ -23,6 +30,9 @@ public sealed partial class AudioEventInstance
  {
   public AudioParameterValue Last;
   public bool Pending;
+  public string LastDecision;
+  public int ChainCount, ChainCredits;
+  public long ChainEnd, ChainRestUntil;
   public long Boundary;
   public AudioInstrument Previous;
  }
@@ -50,7 +60,7 @@ public sealed partial class AudioEventInstance
  }
  void StopOverlay()
  {
-  StopSharedOverlays();
+  StopSharedOverlays();parentLayers.Clear();
   foreach(var voice in overlayVoices)voice.Handle.Stop(0);overlayVoices.Clear();
   foreach(var state in overlayStates.Values)state.Pending=false;
  }
@@ -133,19 +143,36 @@ public static partial class AudioEventValidator
   {
    if(track?.Instruments?.Any(clip=>clip?.OverlayBodySeconds>0)==true && (!e.SharedMusicOutput || track.Overlay?.Enabled!=true))
     result.Error(path+"/Overlay/"+track.Name,"A separate phrase body requires a shared-output overlay track.");
+   foreach(var clip in track?.Instruments ?? new())
+   {
+    if(clip?.AllowReleaseTailAcrossLoop==true && (!e.SharedMusicOutput || track.Overlay?.Enabled!=true || clip.OverlayBodySeconds<=0 || clip.CompoundHits is {Count:>0}))
+     result.Error(path,"A loop-crossing tail requires a shared ordinary phrase with a positive body duration.");
+    if(clip?.CompoundHits is not {Count:>0} hits)continue;
+    if(!e.SharedMusicOutput || track.Overlay?.Enabled!=true || clip.IsSubEvent || clip.OverlayBodySeconds!=0)
+     result.Error(path,"Compound hits require a shared-output sound overlay with no separate body duration.");
+    if(hits.Count>3 || hits.Any(hit=>hit is null || !hit.IsValid))result.Error(path,"Compound instruments require one to three valid source ranges and beat offsets.");
+    else if(result.IsValid && e.Source(clip)?.Tracks?.Any(source=>source.Length>0 && hits.Any(hit=>hit.SourceOffset+hit.Length>source.Length))==true)
+     result.Error(path,"Compound hit exceeds its Sound Event source range.");
+   }
    if(track?.Overlay is not {Enabled:true} rule)continue;
    var at=path+"/Overlay/"+track.Name;
    if(track.Instruments?.Any(instrument=>instrument?.IsSubEvent==true)==true)result.Error(at,"Put phrase banks inside the child event; overlay source slots require sound instruments.");
-   if(string.IsNullOrWhiteSpace(rule.VoiceGroup) || rule.QuantizationBeats<0 || rule.QuantizationBeats>32)result.Error(at,"Overlay group is required and beat quantization must be between 0 and 32.");
+   if(string.IsNullOrWhiteSpace(rule.VoiceGroup) || !double.IsFinite(rule.QuantizationBeats) || rule.QuantizationBeats<0 || rule.QuantizationBeats>32 || rule.QuantizationBeats>0 && rule.QuantizationBeats<.125)result.Error(at,"Overlay group is required and beat quantization must be between 0 and 32.");
+   if(rule.MaximumChainPhrases<1 || rule.MaximumChainPhrases>8 || !float.IsFinite(rule.ChainRestBeats) || rule.ChainRestBeats<1)
+    result.Error(at,"Phrase chains require a limit of 1 to 8 and a finite rest of at least one beat.");
+   if(rule.MaximumChainPhrases>1 && (!e.SharedMusicOutput || rule.TriggerParameter is null || rule.ActivityConditions?.Conditions is {Count:>0} || track.Instruments.Any(i=>i.CompoundHits is {Count:>0})))
+    result.Error(at,"Phrase chains require a shared-output trigger-only overlay with ordinary sound phrases.");
+   if(rule.SchedulingLeadMilliseconds<12 || rule.SchedulingLeadMilliseconds>1000 || !e.SharedMusicOutput && rule.SchedulingLeadMilliseconds!=60)
+    result.Error(at,"Scheduling lead requires shared output and 12 to 1000 milliseconds; ordinary output uses the default 60.");
    ValidateTimelineConditions(rule.Conditions,at,parameters,result);
    if(rule.ActivityConditions is not null)ValidateTimelineConditions(rule.ActivityConditions,at,parameters,result);
    if(rule.TriggerParameter is null && rule.ActivityConditions?.Conditions is not {Count:>0})result.Error(at,"An overlay needs a world trigger or activity conditions.");
    if(rule.TriggerParameter is {} p && !parameters.Values.Contains(p))result.Error(at,"Overlay trigger must be a declared parameter.");
-   if(!float.IsFinite(rule.BeatsPerMinute) || rule.BeatsPerMinute<=0 || !float.IsFinite(rule.CooldownBeats) || rule.CooldownBeats<1 || !float.IsFinite(rule.Volume) || rule.Volume<0)result.Error(at,"Overlay tempo, cooldown, and volume must be finite and in range.");
+   if(!float.IsFinite(rule.BeatsPerMinute) || rule.BeatsPerMinute<=0 || !float.IsFinite(rule.CooldownBeats) || rule.CooldownBeats<.25f || !float.IsFinite(rule.Volume) || rule.Volume<0)result.Error(at,"Overlay tempo, cooldown, and volume must be finite and in range.");
    if(!string.IsNullOrEmpty(rule.BeatGridName) && !(e.BeatGrids ?? new()).Any(x=>x?.Name==rule.BeatGridName))result.Error(at,"Overlay grid name must refer to an existing grid.");
    if(e.BeatGrids is not {Count:>0})result.Error(at,"Overlays require a music beat grid.");
    foreach(var clip in track.Instruments ?? new())
-    if(clip is not null && (clip.TrimEnd<=clip.TrimStart || clip.OverlayBars is null || clip.OverlayBars.Any(x=>x<1)))result.Error(at,"Overlay clips need a finite trim range and positive destination bar numbers.");
+    if(clip is not null && (clip.CompoundHits is not {Count:>0} && clip.TrimEnd<=clip.TrimStart || clip.OverlayBars is null || clip.OverlayBars.Any(x=>x<1)))result.Error(at,"Overlay clips need a finite trim range and positive destination bar numbers.");
   }
  }
 }

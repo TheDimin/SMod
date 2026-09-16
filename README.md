@@ -6,6 +6,56 @@ read-only MCP inspection and validation tools over s&box `SoundEvent` playback.
 This is the detailed guide for agents working on the library or on the audio
 assets that consume it.
 
+## Optional editor data
+
+Inspecting a graph must not create optional features. The native inline object inspector can instantiate null class values. Use the existing `AudioOptionalControlWidget` for optional reference-type controls; creation must require the author to select Add. This covers playlists, tone, overlay rules, and layer controls. Extend `check_audio_inspector_nulls` when adding another optional field. Verify that an absent value stays null, existing values remain unchanged, and graph serialization is unchanged after inspection.
+
+Playback-plan inspection must not advance source variation history. A plan without a playback selector makes a temporary source choice only. Actual playback supplies its selection owner. Source variation history now belongs to `AudioSourceSelectionHistory`, keyed weakly by source definition identity. This preserves repeat avoidance across successive one-shot instances without storing playback state on the resource or retaining unloaded definitions. Retained instruments still keep their selected variation until retriggered. Exclusive selection scans eligible entries without allocating a candidate array. Preserve the intended repeat-avoidance scope for successive one-shot sounds when changing source storage.
+
+## Graph-owned source data
+
+Explicit live audition refresh applies source volume and pitch changes to retained ordinary voices without restarting their source position. Ranged values keep their selected position instead of rolling a new value on each edit. Shared music still requires fixed unit pitch.
+
+Store source variation data in `AudioEvent.Sources`. Each `AudioInstrument.SourceId` addresses one source in that same graph. Multiple clips may share a source entry. A sub-graph remains a separate AudioEvent resource and cannot use a parent's source ID. Source IDs must be unique among all element IDs in their graph.
+
+The source definition is plain data, not a GameResource. It contains volume and pitch ranges, selection mode, and conditioned SoundFile variations with offsets and lengths. There is no `.sndevt` compatibility path. Do not create a temporary resource to adapt source data for playback.
+
+Validation prepares graph-local source indexes. Voice creation retains the selected source and variation; continuous gain updates use that retained data. Selection history belongs to a separate runtime owner with weak source identity keys. Structural source-reference changes require validation and a new playback instance; supported gain audition edits remain live.
+
+Source authoring uses the graph's undo and save transaction. Get Path identifies a source by graph path and source GUID. Project migration status and measured performance belong in the active project's `Design/Audio`; this schema description is not evidence that a project's conversion or benchmark passed.
+
+## Graph input contract
+
+An audio event is a reusable graph. The same resource can run alone or as a child. When used as a child, every declared input must exist on its direct parent, with a compatible type and full value range. This also applies to an exit graph and every edge of a nested graph. Missing inputs are validation errors; the child must not silently use defaults instead of inherited world state.
+
+Current binding matches names without case sensitivity. Each child instance resolves its parent input references once when created. Subsequent updates copy changed values through those stored references. Connections and current values belong to the instance; resource definitions are not changed. Changes to input declarations require a new instance. Gain and other supported audition controls remain live.
+
+Retained shared music voices evaluate current conditions and mix values directly through `EvaluateSelectedVoice`. Gain updates must not rebuild a whole graph plan or reselect their sources. The returned mix is a readonly value struct; continuous slot arrays and phrase ownership remain separate.
+
+This is one prepared connection table, not a compiled runtime graph. Parameter resource migration, complete immutable playback arrays, build compilation, and before/after performance measurements remain separate work. Do not convert all authoring classes to structs or claim a speed gain without measurement.
+
+## Parent music flow and fixed source controls
+
+Use `AudioInstrument.LayerControl` on the retained parent to control a direct shared-output child. `SubEventInstrumentId` identifies the parent's selector. `ChildEvent` plus `ChildTrackId` identifies the source role; IDs can be copied between different event files, so do not assume a track GUID is globally unique.
+
+`SustainLayer` changes a continuous track's gain without seeking or restarting it. A rising trigger counter starts a held level. Extra requests coalesce into one pending extension at a complete phrase boundary. `PhraseBeats`, `MaximumPhrases`, and `RestBeats` use the active child's grid. The first hold includes at least one complete phrase, plus any partial phrase before the next boundary. Attack and release are seconds. Idle and active gain are multipliers; 2 doubles the target track gain. Use measured peak margin when tuning them.
+
+Live parent phrase controls include the latest request decision in their reason text. Inspect that decision when a counter changes without a voice: conditions, rest, group occupancy, chain limits, and missing timely compatible entries can reject it. The last decision is bounded per bank; it is not an event queue or a session log.
+
+`TriggerPhraseBank` sends parent requests to a child overlay with `ParentControlled=true`. The child bank keeps source ranges, compatible entry bars, chain limit, and recorded release tails. Its local trigger and activity counters do not start it. The controller's sustain-only settings do not change the bank's rules. Gameplay still sends world facts only.
+
+A control's Start Time and positive Trim End define its parent timeline window (duration in seconds for this control type). Its conditions must also match. Build and service loops can therefore own separate control lanes. Live diagnostics show the target voice gain and the reason for activity; they do not move authored blocks or measure acoustic loudness.
+
+Control track volume, volume automation, and editor audition mute also affect the child target. This applies to continuous layers and triggered phrase banks. Parent master gain is applied once through the child instance, not again through a control placed on the master track. These controls change playback gain; they do not edit the child resource.
+
+For the parent flow, `RetainSubEventPositionOnTimelineJump` keeps a song at its current source position across parent loops/jumps. Song eligibility and rotation still belong to its parent selector. `SubEventExitFadeSeconds` retains the outgoing song when no choice remains, for example while a direct parent cue plays. A child cannot jump to a parent or sibling marker.
+
+For triggered parent cues, `TriggerDelaySeconds=0` gives immediate entry after the trigger even when the cue is displayed later on the timeline. Null retains the older behavior, where Start Time is the trigger delay. Native completion still follows source playback time, including pitch changes.
+
+These rules and source references are authored data. Sustained control prepares an immutable rule when it binds to a child; it does not compose PCM or rewrite the timeline. This is not yet evidence of a separate build-time playback-plan compiler or a packaged-build performance result.
+
+Use `check_audio_scenario` for parent control/phase checks. The single shared-event PCM check covers a child decoder and its local overlays; it does not prove the parent action route. `check_audio_timeline_zoom` tests block placement under simulated live start times and restores the view. Keep that UI evidence separate from actual gameplay and listening.
+
 ## Start here
 
 Use the smallest workflow that matches the job:
@@ -24,33 +74,13 @@ Use the smallest workflow that matches the job:
 The runtime library is in `Code/smod.csproj`. The focused tests are in `Tests/AudioEventTests.cs` and `Tests/AudioEventBeatTests.cs`.
 Use `Tests/Smod.Tests.csproj` or the consumer test host with the `AudioEventTests` filter.
 
-## Host project source-file rule
+## Project source-file rules
 
-Use only audio sources found in `AudioSource`. Do not create,
-convert, split, mix down, normalize, or change audio files on disk. This also
-applies to audition renders and audio capture exports. Existing imported source
-files can be used when their hashes match the files in AudioSource. Do not make
-new audio copies under the current project instruction.
-
-Make sound changes in Smod: use source offsets and lengths, instrument trims,
-timeline placement, loops, gain, fades, pitch, and tone controls. Keep these
-settings in the authored resources. Apply signal processing in memory during
-playback. Keep the original source files unchanged.
-
-If a required control is missing, extend Smod and its MCP tools. Do not use an
-external render as a substitute. Check resources and live playback without
-writing audio captures. Preserve source paths, hashes, and licence records in
-JSON. Existing generated audio files are not approved sources; replace their
-active references with source ranges before any separate cleanup.
+Read the active project's `Design/Audio/README.md` for source, capture, processing, and licensing constraints. These are project rules, not Smod restrictions.
 
 ## Build audio compression
 
-For the Host project review build, keep compiled audio below 300,000,000 bytes.
-Use `audio_compression.set_sound_compression` with a project sound path,
-`enabled=true`, and `bitrate=128`. This writes only the native import metadata
-keys `compress` and `bitrate`, then requests native compilation. It does not
-convert or change the source file. This build setting is permitted by the
-director's compression request; the source-file rule still applies.
+Choose the audio budget and import settings from the active project's `Design/Audio`. Native compression changes compiled output without rewriting original source bytes. Verify the current MCP schema before changing import metadata.
 
 Keep stereo, sample rate, loop, trim, gain, and normalization settings unchanged.
 After compilation, run `audio_build.inspect_audio_build_size` for a fresh
@@ -60,7 +90,7 @@ the build became smaller. Refresh the publisher file list to discard its old
 size calculation. Compression changes require listening checks, especially for
 short transients and synchronized stem ranges. Use
 `audio_compression.check_compressed_sound_timing` with the compiled asset path
-and original AudioSource WAV path to check decoded frame count and delay in
+and original source WAV path to check decoded frame count and delay in
 signal-bearing windows. The check writes no audio. A null window delay means
 silence could not provide a timing measurement. A passing result covers the
 measured windows; it does not prove listening quality or native start timing.
@@ -72,15 +102,15 @@ Keep the three authored resource types separate.
 | Resource | Extension | Owns |
 | --- | --- | --- |
 | `AudioEvent` | `.audevt` | Shared playback settings, master track, authored tracks and instruments, parameters, automation, timeline markers/regions/loops, and event fade-out. |
-| `SoundEventResource` | `.sndevt` | One source-variation set: ranged volume and pitch, `Random` or `RandomExclusive` selection, and the source track list. |
+| `AudioSourceDefinition` | Stored in `.audevt` | Plain source-variation data: permanent local ID, ranged volume and pitch, selection mode, and source tracks. |
 | `AudioParameter` | `.audparam` | A named continuous, discrete, or labeled control with its range/default or label set. |
 
-An `AudioInstrument` references one `SoundEventResource`, or selects a child
+An `AudioInstrument.SourceId` references one local entry in `AudioEvent.Sources`, or the instrument selects a child
 `AudioEvent` from `SubEvents`. See **Sub-graphs** below. Each
 `SoundEventTrack` then points at a `SoundFile` and can define a source `Offset`,
 `Length`, and condition. The event copies its shared playback settings into
 the native s&box `SoundEvent` for each voice. Do not add a second nested native
-sound playlist to `SoundEventResource`; its `Tracks` list is the sole source
+sound playlist to `AudioSourceDefinition`; its `Tracks` list is the sole source
 variation list.
 
 ### Event tracks and instruments
@@ -152,12 +182,7 @@ game update at the boundary; it is not sample-accurate mixing or proof of a good
 musical transition. Keep song lengths and grids in the children and listen to
 phase transitions before release.
 
-For the restaurant, `cafe_music_loop.audevt` is the retained parent. Gameplay sends
-WorldState, Intensity, ServiceCount, InteractionCount, and ActiveCoffeeCount.
-The parent chooses a service song and handles shop, build, and lost phases.
-Intensity affects the selected song's instruments only. Song resources are in
-`Assets/audio/kitchen/events/music/`. Existing per-song authoring scripts target
-these children. The legacy flat import stops before it can replace this graph.
+Read the active project's `Design/Audio` for event paths, world parameter mappings, and authoring scripts.
 
 For live checks, attach the parent in the existing editor's LIVE selector. The
 block shows its selected child and gain layer. Its tooltip reports the maximum
@@ -215,7 +240,7 @@ process must finish; the event owns the sound selection and timeline change.
 Use separate events for sounds that have independent playback lifetimes.
 
 1. Put the phase clips on named tracks in one event. Set each instrument's
-   timeline start, source trim, fades, and gain. Use `.sndevt` source resources
+   timeline start, source trim, fades, and gain. Use graph-owned source definitions
    for slices and random pitch or volume ranges.
 2. Declare a discrete `Finish` parameter with range 0–1 and default 0.
 3. Add a loop region for the working phase, with the condition `Finish == 0`.
@@ -241,7 +266,7 @@ the time at which it sends a trigger.
 ### Editor steps
 
 Smod does not require a particular asset-root layout. Consumer projects may
-organize `.audevt`, `.audparam`, `.sndevt`, and source audio in whatever stable
+organize `.audevt`, `.audparam`, and source audio in whatever stable
 folders match their content pipeline; keep authored resource paths stable once
 runtime code or scene data refers to them.
 
@@ -468,7 +493,7 @@ event for you.
 - Keep authored parameter, track, event, and label names stable because gameplay
   and scene properties refer to them.
 - Put shared native playback settings on `AudioEvent`; put source variation
-  behavior on `SoundEventResource`.
+  behavior in graph-owned `AudioSourceDefinition` data.
 - Prefer one meaningful parameterized event over many near-duplicate cue
   resources.
 - Add validation and focused executable tests for new serialized capabilities.
@@ -495,6 +520,14 @@ The time display shows the current section and pending section. Normal mouse-whe
 Voice gain excludes mixer and spatial attenuation; it is not a loudness meter. The overlay observes playback without advancing it. `AudioLiveDiagnostics.CaptureActive()` and `capture_audio_instances` expose detached main-thread snapshots. `open_audio_live_monitor` now opens the asset editor with the overlay attached; there is no separate monitor window or menu.
 
 ### Movable music phrases
+
+Shared overlays support QuantizationBeats down to 0.125. SchedulingLeadMilliseconds sets the post-preparation safety margin, 12-1000 ms, default 60. It does not include loading or device latency. Use shorter margins only for brief sounds after native timing checks. Exact chain deadlines remain unchanged.
+
+`CooldownBeats` accepts finite values of at least 0.25 beats. An active phrase still owns its voice-group slot; a short cooldown does not cut its source or force another voice.
+
+Shared-output trigger-only phrase banks can set `MaximumChainPhrases` (1 disables, maximum 8) and `ChainRestBeats` (at least 1). Success counter increases reserve at most the remaining chain capacity. `OverlayBodySeconds` defines the exact following phrase entry; the original source tail remains audible. The next source must permit that destination bar. Preparation that misses this exact sample is rejected instead of moving the continuation to a later beat. At most two phrase voices coexist. Ordinary compound-hit instruments cannot use chaining.
+
+A chain overrides ordinary queue/cooldown controls: it accepts bounded extensions while its phrase is active, then requires the authored rest after the final complete source tail. All overlays in the same voice group observe that rest. Services during rest are discarded. Activity does not extend a chain; use a separate activity rule. Pause freezes the output clock; stop, seek and state withdrawal clear pending work through the normal ownership path. Live voice reasons identify each admitted continuation and its position in the chain.
 
 A track with `Overlay.Enabled=true` is a phrase bank. Keep it false for ordinary timeline tracks; the editor can create an empty inline rule. Its instruments do not play at their authored `StartTime`; that position only arranges the bank in the editor. `TrimStart` and `TrimEnd` select a source phrase. `OverlayBars` lists allowed destination bars, numbered from one within the active beat grid. An empty list permits every bar. Check harmony and phrase endings before using that option.
 
@@ -531,7 +564,7 @@ zero gain at the same master volume, and listen before approving a setting.
 
 ### Reload new resource dependencies
 
-Create parameter and source resources before the parent event. If native
+Create parameter resources before the parent event. Store source definitions inside the graph. If native
 compilation succeeds but inspection still shows cached default values, use
 `audio.reload_saved_audio_resource` on the dependency, then on its parent.
 This reload replaces the selected resource's in-memory values with its saved
@@ -626,13 +659,13 @@ does not prove listening quality or production event-instance integration.
 
 ### Open the editor and browse events
 
-Use **Tools > Audio Event Editor** in the main editor menu. The **Audio Events** dock lists `.audevt` assets under the current project's Assets folder. Search by event name or path, then double-click a row to open that event. The normal asset editor routing reuses an already open event window. Use the Audio Event editor's **View** menu to reopen the dock if it is closed. Listing events does not load sound samples or scan AudioSource.
+Use **Tools > Audio Event Editor** in the main editor menu. The **Audio Events** dock lists `.audevt` assets under the current project's Assets folder. Search by event name or path, then double-click a row to open that event. The normal asset editor routing reuses an already open event window. Use the Audio Event editor's **View** menu to reopen the dock if it is closed. Listing events does not load sound samples or scan external source folders.
 
 ### Musical handoff between song sub-graphs
 
-Gameplay supplies world state and intensity. Intensity changes the active song's instrument gains and activity only; do not use it in song-choice conditions. World state can select another song, and completed service songs can rotate.
+Gameplay supplies world facts. The project policy in `Design/Audio` determines which facts affect arrangement, phase eligibility, and full-song rotation. Keep those authoring decisions in the event.
 
-For the restaurant parent, use `SubEventQuantization=NextPhrase`, `SubEventTransitionBeats=4`, and `RotateSubEventsAtEnd=true`. World-state changes wait for a phrase boundary with preparation time where possible. End-of-song rotation remains at the full composition boundary. A reversed state cancels the pending exit. No eligible alternative means the current song continues.
+Use the active project's `Design/Audio` for concrete transition settings and accepted rotation behavior.
 
 Set each child track's `TransitionRole`: `Lead` releases over the final transition window; `Backing` releases over its second half; `Rhythm` holds until a short click-prevention ramp at the boundary. On entry, rhythm starts promptly, backing starts quietly then grows over the configured beats, and lead grows over twice that time. Incoming timing uses the new song's BPM. The normal intensity gain remains a multiplier. The live voice gain view includes these envelopes, including overlay voices.
 
@@ -737,8 +770,8 @@ Stopped or replaced event generations cannot admit a late source completion.
 Pause holds the backing and phrases together. Audition mute and current mix
 values reach active phrase owners. Their gain ramps and authored fades run in
 the sample renderer. A rejected preparation waits at least one beat before an
-activity retry. Keep the saved restaurant graphs on the current path until the
-full song set, parent handoffs, renderer cost, and real gameplay calls pass.
+activity retry. Before a project migration, verify its song set, parent handoffs,
+renderer cost, and real gameplay calls. Record migration status in `Design/Audio`.
 
 The instance owns loading, copied world parameters, output volume, pause, seek,
 audition mute, normal loop position, and authored stop fades. A natural loop
@@ -765,15 +798,14 @@ parent prepares one next child per instrument during the last phrase. The
 replacement stays paused. A ready replacement can enter at a full-song end.
 If preparation is late, the current song keeps its full loop and the replacement
 waits for the next full-song end. Readiness must leave enough time for the
-authored exit fade. Intensity does not select a replacement.
+authored exit fade. Apply the project policy to the choice conditions.
 
 A world-state phase change prepares its selected shared child before it arms
 the beat wait. Shared children use their sample clock for that wait. Reversing
 world state, removing the instrument, or stopping the parent releases unused
 preparation. Do not treat preparation as a guarantee of sample-accurate
 cross-song output: activation still runs on an event update. Native transition
-capture and build-review listening remain required before enabling the saved
-restaurant graphs. A mixed list of shared and legacy output choices still uses
+capture and project listening review remain separate evidence gates for migration. A mixed list of shared and legacy output choices still uses
 the legacy song-end path; keep a shared-song playlist consistent.
 
 
@@ -790,7 +822,7 @@ prove listening quality. The native modes passed with two sessions each;
 saved music events still require the remaining production checks.
 
 
-Parent-to-child control only: the parent sub-graph instrument owns song selection and its repetition. For restaurant music, use the Restaurant music node (374b672a0023ea7fafa4f55dc52176a5) in cafe_music_loop.audevt. Loop Sub-graph Selection is the editor name for RotateSubEventsAtEnd. A child owns only its local arrangement. It cannot select a sibling, write parent parameters, or move the parent timeline. Go To markers and transition regions must target a destination in the same event, even when the destination GUID exists in another graph. Parent inspection of child playback status is permitted; it is not a child command. Internal backing loops keep sound continuous while the parent waits for a ready replacement. Never use a cross-graph Go To as a loop or song-change mechanism.
+Parent-to-child control only: the parent sub-graph instrument owns song selection and its repetition. Loop Sub-graph Selection is the editor name for RotateSubEventsAtEnd. A child owns only its local arrangement. It cannot select a sibling, write parent parameters, or move the parent timeline. Go To markers and transition regions must target a destination in the same event, even when the destination GUID exists in another graph. Parent inspection of child playback status is permitted; it is not a child command. Internal backing loops keep sound continuous while the parent waits for a ready replacement. Never use a cross-graph Go To as a loop or song-change mechanism.
 
 
 ## Live preview controls
@@ -841,13 +873,13 @@ Tools > Audio Event Editor, asset opens, element links, and sub-graph navigation
 Switching events stops the previous editor preview and restores live mute and solo controls. Gameplay playback continues. Old duplicate windows are consolidated when the shared window is opened. If two windows contain different unsaved drafts for the same resource, both remain open until the conflict is resolved; neither draft is discarded automatically.
 
 
-### Host project shared-clock rollout
+### Project shared-clock rollout
 
-The five restaurant song children now enable SharedMusicOutput. The parent selects songs; each child owns its continuous backing and triggered phrases on one audio sample clock. Some Trumpet Jazz uses a continuous drum bed instead of repeated one-bar slices. Intensity changes gain and instrument activity, not song eligibility.
+Project rollout notes belong in the active project's `Design/Audio`, separate from this library contract.
 
 The scenario tool updates its temporary instance during waits, including outside play mode. Use a full preparation phrase before an end-of-song test. A cold source that misses its safe fade window may wait for the next complete song boundary.
 
-Native checks passed for saved-graph rotation, build transition, live controls, all five song outputs, and gameplay coffee/interaction facts. Listening quality remains a build-review decision.
+Use the project's dated evidence for rollout status. A library guide does not establish current listening approval.
 
 
 `music_shared_output_check(updateRate: 30|60|120)` checks complete preloaded phrase samples with a slower main-thread observation cadence. It returns the requested rate and measured maximum interval. It does not set game FPS or prove cold-source streaming behavior. Require sample comparisons and mixer/source cleanup, not just a successful tool call.
@@ -870,7 +902,7 @@ Live voice snapshots include `InstrumentId` and `IsReleaseTail`. Shared overlays
 `music_shared_tail_check` validates two uses of one existing source range in a temporary shared song. Its mixer is silenced after capture, and all samples remain in memory. The result reports separate live rows, retained-tail visibility, distinct starts, maximum simultaneous voices, overlapping frame count, exact summed-sample error, and cleanup. Require Passed and zero retained bytes. This check does not approve the musical body/tail markers or alter production events.
 
 
-For a saved Host project music dependency audit, run `Tools/Audio/audit_music_dependencies.py --output .validation/music-source-dependency-audit.json`. It follows the saved graph, checks original and metadata hashes, credits coverage, and compiled sound presence. It writes only a JSON report. Its byte total covers reached music sounds only; use the actual package report for download-size claims.
+Project-specific audit scripts and saved results belong in `Design/Audio`. Use the native package manifest for download-size claims.
 
 
 `music_shared_tail_lifecycle_check` runs two overlapping source phrases through pause, mute, resume, and seek in an isolated native session. Require two visible voices, a held paused clock, both gains muted, clock advance on resume, cleared voices on seek, silent post-seek output after unmute, mixer removal, and zero retained bytes. No files or game scenes are changed.
@@ -891,3 +923,231 @@ the editor content already matches the current file. Save checks the original
 saved state against disk and stops if it would overwrite a newer external edit.
 Discard restores the current disk content, not the snapshot from when the window
 opened. Genuine local drafts still require a save or discard choice.
+
+### Optional inspector fields
+
+Playlist, tone, and overlay are optional objects. Their audio control widgets
+must not create a default object when a user opens or inspects a resource. Use
+an explicit Add action. The engine generic object control otherwise creates null
+reference values while it builds the inspector, which can enable an empty
+playlist and prevent all music from starting.
+
+Do not rely on `System.Diagnostics.CodeAnalysis.AllowNull` on these C# properties:
+the native regression found the attribute on the setter parameter, while the
+engine inspector checks the property. Use the audio-specific control factory.
+Run `check_audio_inspector_nulls` after changes to these controls. It uses temporary
+objects, checks absent and existing values, and includes an unprotected native
+control that must reproduce auto-creation. It writes no assets or audio files.
+
+
+### Apply a set of world facts
+
+Use `AudioEventInstance.SetParametersByName(IReadOnlyDictionary<string, float>)`
+when one gameplay update supplies several numeric facts. It validates all
+parameter names, types and ranges before changing values, then reevaluates
+playback once. Invalid input changes no values. Labeled parameters use the
+existing label API. Single-value setters remain available for isolated changes.
+
+KitchenAudio sends phase, intensity, service, interaction and coffee facts
+in one batch. Parent-to-child inheritance already copies matching values
+before one reevaluation. A new service trigger can therefore be considered
+alongside current activity, rather than losing to the first partial setter.
+This does not preempt an already scheduled or playing phrase.
+
+
+Scenario numeric parameter maps use the same batch API as gameplay. Labels
+are applied individually before the numeric batch. Parameters are applied
+before a step's seek; use a separate earlier seek step when testing new
+counter triggers, because seeking clears pending requests.
+
+
+### Compound phrase preparation (staged)
+
+`music_compound_prepare_check` prepares a three-hit set from an existing
+source range without playback or audio exports. Require exact beat offsets,
+worker-thread preparation, cache reuse, budget rejection and zero resident
+bytes after close. The source bank caches complete compounds with their
+source ranges under one memory budget. This check does not approve the
+source cut as a complete drum hit. Event authoring and playback admission
+for compound phrases remain under implementation.
+
+
+`music_compound_playback_check` verifies internal compound scheduling in a
+muted native session: full preparation before admission, one shared voice,
+common-owner cancellation, rejection of a cancelled owner and zero residency
+after stop. The runtime takes tempo from its destination grid. Authored
+compound instruments and production interaction resources remain pending.
+
+
+Shared-output overlay instruments can now define `CompoundHits` (one to
+three entries). Each hit has `SourceOffset`, positive `Length`, `BeatOffset`
+(0–16), and `Gain` (0–1). It uses the instrument's selected Sound Event
+source; SourceOffset is relative to that source track's offset. Ordinary
+trims are replaced by the hit ranges. The destination song supplies tempo.
+The instrument envelope covers the complete set. A separate body duration
+is not supported for compounds. Empty CompoundHits keeps normal playback.
+
+The runtime prepares every hit and the complete set before one admission,
+with one owner and group cooldown. Live diagnostics report full set duration.
+Authoring must still verify complete hit decays. Editor waveform/hit-position
+presentation and saved production-event playback checks remain pending.
+
+
+`music_compound_event_check` tests an unsaved, muted Audio Event through the
+real parameter trigger and shared output. It checks startup, trigger admission,
+the full three-hit duration, phrase completion, and instance cleanup. The native
+check passed with no new console warnings or errors. This proves the event path;
+it does not approve the source cuts or the musical result for gameplay.
+
+
+Short compound overlays prepare with event backing before its clock starts.
+Startup preparation is bounded to 16 choices, at most two seconds of source
+ranges per choice and beat offsets through four. It uses the session source
+bank and memory limit. Budget rejection keeps backing playback available;
+other choices retain preparation on demand. Stop cancels startup preparation.
+The scheduler reserves 60 ms before a safe entry. Preloading does not
+mean every action can enter the immediately following beat.
+
+## Music track gain
+
+Track volume uses linear gain: 0 is silent, 1 preserves the level, and 2 is about +6 dB. Shared backing and phrases support boosts above 1, including live changes. Gains must be finite and nonnegative. Player master volume and fade envelopes remain 0 to 1. The floating-point mixer does not clamp individual tracks; allow headroom in the combined output to avoid clipping.
+
+## Action timing and phase return
+
+QuantizationBeats supports fractions down to 0.25. At 100 BPM a quarter beat
+is 150 ms. Shared music reserves 60 ms scheduling lead; source preparation and
+gameplay updates can add delay. Prewarm short compound responses and measure
+actual action-to-entry time. Restricted OverlayBars are for compatible lead
+destinations, not prompt handling feedback. Live voice Reason reports the
+trigger fact or activity facts that admitted a shared phrase.
+
+Set ResumePlayback on a song sub-event choice to keep its local position when
+leaving that phase. The bookmark belongs to the current parent instance; it is
+not saved to disk or shared across players. Returning to that choice starts its
+shared stems at the saved position. A new parent instance starts fresh. Entry
+fade timing is relative to the resumed position. Build music can remain a
+separate choice. Do not use intensity to select another song.
+
+If authored schema fields are missing after code edits, audio_library_status
+reports the actual loaded Smod types and project path. Only for confirmed stale
+code, audio_library_refresh uses the editor compile path. Verify status again
+before editing and saving; compile success alone is not proof of loaded types.
+
+
+## Complete exit passages
+
+A song choice can reference an `ExitEvent`. On a phase change, the parent loads
+both the passage and destination while the old song continues. At the selected
+entry boundary it replaces the old song with the passage. The passage plays one
+full shared-output grid, then the prepared destination starts. Initial playback
+and full-song rotation do not use ExitEvent. Set `ExitEventOverlapSeconds` on the
+parent song choice to start the destination before the passage ends. Zero keeps
+the full wait. A positive value must be shorter than the passage. The remaining
+source plays to its exact final sample without an extra crossfade envelope;
+pause, mute, and stop still apply. Choose the overlap from a verified musical
+ending, not just a silence threshold. The passage cannot choose a song or
+write parent facts. Matching parent parameters pass down as with other children.
+
+The passage requires Shared Music Output and a valid full grid. The parent limits
+all its native output at the exact final sample so an editor stall cannot repeat
+its opening. Its authored source must contain its complete ending; this limit
+cannot restore a cut note. A changed destination updates the prepared child,
+without restarting the passage. If that replacement is late, the passage ends
+once and remains silent until it is ready. Pause holds the passage clock.
+
+The existing live overlay shows the active passage as the parent's child. MCP
+reports Handoff `Exit passage`, remaining passage seconds, destination facts,
+and a voice Reason. The parent context menu can open the exit event. Graph
+inspection, cycle validation and graph save include exit references. Duplicate
+instruments retain exit, resume and entry settings.
+
+Read the active project's `Design/Audio/README.md` for project policy and examples.
+
+
+For time-sensitive lead overlays, set a finite MaximumMusicWaitBeats. Candidate
+entry is checked before a phrase occupies its group, and source preparation also
+uses that deadline. If no candidate can enter in time, the pending action is
+cleared. Continuing activity can try again; a one-time action needs a new counter
+change. QueueWhilePlaying and cooldown rules can drop busy actions separately.
+Keep an immediate, non-pitched response for important interactions when a melodic
+lead has restricted entry bars. Do not remove harmonic restrictions to hide delay.
+
+
+In gameplay, publish action facts at the action. Batch counters that represent
+one action, such as service and handling. Use a slower scan for occupancy and
+smooth intensity. An activity scan can add delay before the audio scheduler even
+receives a coffee start. Verify facts before a subsequent game tick, then measure
+the native output separately. Compare actual source levels before choosing gains;
+equal gain values do not make quiet and loud recordings equally audible.
+
+### Ready entry and song overlap
+
+`AudioSubEventChoice.EarlyEntryConditions` is an optional alternative to `Conditions`. Every condition in either list must match. An empty early list does not enable early entry. Use a world fact such as a ready countdown. The same choice remains active when normal phase conditions become true, so the song does not restart at gameplay start. A cancelled early entry skips that song's `ExitEvent` and returns directly to the eligible phase.
+
+`EntryCrossfadeSeconds` keeps the outgoing shared song alive while the incoming song starts. Zero keeps sequential behavior. A positive value uses the outgoing audio sample clock for a smooth volume fade. `EntryFadeBeats` controls the incoming song separately. The next beat does not wait for the whole overlap duration. Retained outgoing children remain owned, visible in live diagnostics, and affected by pause, mute, stop and seek. A new replacement clears an older overlap to bound resource use.
+
+For a pitch bend on an existing native clip, automate `Pitch` and `Volume` on its retained track. Do not jump or retrigger that clip. Pitch 1 is unchanged; 1.12 raises playback speed and pitch; 0.78 lowers both. Shared music stems require unit pitch. Master volume and pitch automation apply once to the master instruments and once to each child track.
+
+Read the active project's `Design/Audio/README.md` for project policy and examples.
+
+## Session level measurements
+
+Use `audio_session_start` after playback starts. It returns immediately and captures the current editor audio session until `audio_session_stop`, a mixer replacement, or a configured limit. The default interval is one second; supported values are 0.25-10 seconds. Duration is 1-240 minutes (default 120), with a 512 MiB file limit. These are recording limits, not a required test duration. Use the project review plan for the duration of a check.
+
+The tools write JSONL statistics under `.validation/audio-sessions`, never audio samples. `audio_session_status` gives the last completed front-stereo window. `audio_session_mark` records a named moment or volume change. Stop and flush before calling `audio_session_report` or paged `audio_session_read`. The report supports `fromSeconds` and `toSeconds` for comparisons, and lists instruments and gain ranges observed within its loudest, quietest and stereo-cancellation windows. Follow its exact `smod:` element links before tuning.
+
+Measurements include sample peak and RMS in dBFS, clipping counts, invalid samples, mono loss and stereo correlation. Zero dBFS is sample full scale. RMS is the unweighted average signal level; it is not LUFS. True peaks between samples are not measured. Channel -1 is the front stereo pair; channels 0-7 are measured separately. The meter observes the last master processor input and applies the master mixer and `Sound.MasterVolume` gains to its measurements only. It never changes the signal. This is an estimate before engine hard limiting and Windows/device output, not sound pressure at the speakers. Multiple listeners remain separate: never add their dB values or present one listener as the final sum.
+
+Instrument/world snapshots are sampled every 100 ms; each carries instance IDs, element IDs, selected sources, parameters, gain factors and reasons. Inactive/stopped rows are omitted; limits are 128 instances and 256 rows per instance. Very short sounds can fall between snapshots. A correlated instrument is a candidate cause, not an isolated measured source. Record actual elapsed times and maximum snapshot gaps. Silent periods without audio callbacks and the final partial audio window are excluded from energy averages. A complete footer means the file closed, not that the entire intended session was observed; read its stop reason and dropped-window counters.
+
+The recorder is editor-only. It detaches only its own processor, and releases stopped processor/session objects. No meter runs in a published game. Do not clear another tool's processors or stop the user's play session for measurement. The mix thread does bounded arithmetic and queues at most 256 windows; JSON/file work stays out of that callback.
+
+Use the active project's `Design/Audio` for game-specific mix tools, volume defaults, saved preferences, and listening reference settings.
+## Parent instrument completion triggers
+
+An ordinary sound instrument can use `StartTriggerConditions` to play once when all listed conditions become true. An empty list keeps normal timeline behavior. `StartTime` is a delay from the trigger. A false condition rearms the trigger but lets the current sound finish. A new true entry replaces that instrument's previous triggered voice. Optional `StopTriggerConditions` cancel the voice without marking it complete; use them after a cancellation envelope reaches silence.
+
+Set a sub-graph choice's `EntryAfterInstrument` to the permanent GUID of a triggered sound in the same event. The parent prepares the destination while that sound plays and retains the outgoing child. When the source reaches its explicit trim end, the parent admits the prepared destination on the next update, without an additional beat wait. Native source time accounts for pitch changes. If the destination is still loading, the outgoing song remains until it is ready. This is update-driven admission, not a sample-accurate cross-mixer splice. When no trigger has fired in this parent session, normal selection applies.
+
+The trigger sound, its conditions, pitch/gain automation, and destination gate all belong to the parent. No child writes parent state. Completion remains latched until a new trigger. Changing world conditions can cancel a pending destination. Pause holds playback; mute changes gain without cancelling completion. Stop releases owned voices. Explicit seek resets the trigger and starts a fresh passage if its conditions currently match.
+
+This first implementation supports finite ordinary sound instruments in non-shared parents, including the Master track. It does not support triggered sub-graphs or shared-output overlay slots. Use a positive explicit trim range, unconditional playback admission, and automation for gain changes. Validation rejects foreign or ambiguous GUIDs. The live overlay's Reason field states which parent instrument a song awaits; sound rows show waiting, playing, completed, or cancelled trigger state. `inspect_audio_authoring` exposes all controls.
+
+### Scenario seeks with retained children
+
+In `check_audio_scenario`, `seekSeconds` moves the temporary parent. `seekToSongEndLeadSeconds` seeks the temporary active child to its grid end minus the given lead. It must not advance the parent as a substitute: a retained child intentionally ignores parent timeline jumps. The report includes `SongEndSeek` with the child ID, original/requested child position, and parent positions. Reject negative, non-finite, and out-of-grid leads. Inspect the subsequent child snapshots to prove the song actually crossed its ending. One eligible song looping does not prove rotation between compositions.
+
+### Release tails at a composition loop
+
+`AllowReleaseTailAcrossLoop` is an explicit instrument option for shared-output sound phrases. It requires positive `OverlayBodySeconds`. The complete body must fit before the composition loop ends; the full source range, envelope and tail still play on the shared clock afterward. False preserves full-clip boundary admission. It does not widen allowed bars, permit a partial body, or allow cross-graph commands. Verify the released notes against the loop's incoming harmony. A later change to another composition needs its own handoff review.
+
+### Native source audition check
+
+`check_audio_source_audition(sourcePath)` uses an existing imported sound at least two seconds long. It creates a temporary muted event, waits for native source progress, pauses it, changes the graph-local source gain and pitch, refreshes audition state, and restores the values. It reports control values, paused source-clock continuity, and cleanup. It writes no assets and does not modify user previews. It does not measure audible output level or verify an inspector mouse interaction.
+
+
+## Instrument echo effect
+
+Local (`UI=true`) non-shared source instruments support optional `Echo` under Effects. Use the optional Add control; inspecting an absent effect must leave it null. Native source voices use Echo with ReleaseOnly=false. Shared-output stems use ReleaseOnly=true, as described below. Overlay phrase tracks, sub-graph selectors, spatial events, and parent layer-control nodes cannot own this effect; validation rejects those cases.
+
+`DelaySeconds` is the repeat interval (0.02-0.5 seconds), `WetGain` is the first-repeat amplitude (0-0.6), and `Feedback` is the retained fraction per repeat (0-0.75). The dry signal is unchanged. `TailSeconds` bounds output after the source stops (0.1-4 seconds), with a final 150 ms fade. These settings are captured when a voice starts; editing them affects the next voice, not a live delay buffer.
+
+Normal source/trim completion releases the tail without delaying instrument completion triggers. Explicit event stop cancels tails, and event pause and zero-volume/mute suppress them. Tail routes use a silent in-memory carrier, then destroy their private mixer; no audio file is written. A five-second unpaused watchdog removes a route if native callbacks cease. Existing source and track tone processing stays ahead of echo.
+
+Use `check_audio_echo(sourcePath, sourceOffset)` for a short muted native source-stop/tail/cleanup check. It measures PCM before its private mixer mute, not speaker level or listening quality. `check_audio_inspector_nulls` includes optional Echo creation and value retention.
+
+
+### Sustain release curve
+
+`AudioMusicLayerControl.ReleaseCurve` selects LinearAmplitude or SmoothDecibels. LinearAmplitude changes the amplitude multiplier at a constant rate. SmoothDecibels interpolates between the starting and idle levels in decibels, with zero slope at both ends. `ReleaseSeconds` is the complete release duration. A zero idle gain uses a -80 dB calculation floor and reaches exact zero at the end. This is a gain envelope, not reverb and not a recorded phrase ending.
+
+The release follows the child clock and the actual phrase boundary, including updates that arrive late. Pause holds that clock. A new admitted request during release starts its attack from the current gain. The source is not restarted or moved. Project choices belong in Design/Audio.
+
+
+### Buffered echo for shared stem release
+
+Set the child source instrument's `Echo.ReleaseOnly=true`. Set its parent sustain control's idle gain to zero. A release-only instrument closes its source contribution when the parent's held play period ends; it does not extend a source fade into the next note. Its short stereo buffer then repeats with falling level for `TailSeconds`. The output uses a 5 ms transition from the last sample into the echo and a final 150 ms fade. This is echo, not a recorded ending or diffuse reverb.
+
+Buffers are allocated during backing preparation, not during sample rendering. Active dry audio remains unchanged. Closed input cannot feed the next source note into the buffer. Retrigger clears the old tail and records the newly active part. Seek clears history; pause holds it. Mute/disabled parent control or track conditions clear the tail independently of its source gain. Stop cancels shared output. The base stem and common source clock remain intact.
+
+`check_audio_music_release_echo` uses one second of an existing source in a muted native route and returns tail and post-tail sample peaks. Its source preparation budget is 64 MiB. The post-tail threshold is 1e-7 amplitude (-140 dBFS); native output can contain tiny floating-point residue. DSP tests separately require exact zero after expiry and reject injection of a following note. The tool writes no audio.

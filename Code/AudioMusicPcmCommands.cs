@@ -55,7 +55,7 @@ internal sealed class AudioMusicPcmCommands
 		ArgumentNullException.ThrowIfNull( owner ); ArgumentNullException.ThrowIfNull( pcm );
 		if ( pcm.Length == 0 || pcm.Length % 2 != 0 ) throw new ArgumentException( "Expected stereo PCM.", nameof( pcm ) );
 		if ( start < 0 || start > long.MaxValue - pcm.Length / 2 ) throw new ArgumentOutOfRangeException( nameof( start ) );
-		if ( !float.IsFinite( gain ) || gain < 0 || gain > 1 ) throw new ArgumentOutOfRangeException( nameof( gain ) );
+		if ( !float.IsFinite( gain ) || gain < 0 ) throw new ArgumentOutOfRangeException( nameof( gain ) );
 		if ( closed || requests.Count >= capacity ) return null;
 		var request = new Request { Owner = owner, Pcm = pcm, Start = start, Gain = gain, Generation=producerGeneration };
 		requests.Enqueue( request ); return request;

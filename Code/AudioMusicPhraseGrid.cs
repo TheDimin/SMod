@@ -3,9 +3,9 @@ namespace Smod;
 /// <summary>Find a complete phrase entry on the authored grid. Restricted bars mean bar starts, never a later beat within that bar.</summary>
 internal static class AudioMusicPhraseGrid
 {
- public static long? Next(AudioBeatGrid grid,long earliest,int quantumBeats,int phraseFrames,IReadOnlyCollection<int> entryBars=null)
+ public static long? Next(AudioBeatGrid grid,long earliest,double quantumBeats,int phraseFrames,IReadOnlyCollection<int> entryBars=null)
  {
-  if(earliest<0 || quantumBeats<1 || phraseFrames<1)throw new ArgumentOutOfRangeException(nameof(earliest));
+  if(earliest<0 || (!double.IsFinite(quantumBeats)||quantumBeats<.125) || phraseFrames<1)throw new ArgumentOutOfRangeException(nameof(earliest));
   var end=grid.End.Seconds*44100;
   if(entryBars is not {Count:>0})
   {

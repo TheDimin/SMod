@@ -192,7 +192,7 @@ public sealed partial class AudioEventInstance
 			EnsureValid();
 			RefreshPlaybackState();
 			var states = new List<AudioInstrumentPlaybackState>( _voices.Count );
-			foreach ( var voice in _voices )
+			foreach ( var voice in _voices.Concat(_crossfadingSubEvents.Select(f=>f.Voice)) )
 			{
 				states.Add( new AudioInstrumentPlaybackState(
 					voice.Track,
@@ -239,6 +239,7 @@ public sealed partial class AudioEventInstance
 				throw new ArgumentOutOfRangeException( nameof( value ), "Timeline position must be finite and non-negative." );
 
 			RefreshPlaybackState();
+			_instrumentTriggers.Clear();
 			_timelinePosition = value;
 			if(sharedMusic is not null)SeekSharedMusic(value);
 			_timelineAnchor = AudioSystem.TimelineScheduler.Now;
@@ -262,7 +263,9 @@ public sealed partial class AudioEventInstance
 			_timelinePosition = CurrentTimelinePosition;
 			_timelineAnchor = AudioSystem.TimelineScheduler.Now;
 			_paused = value;
+            foreach(var echo in echoVoices)echo.Voice.PauseEcho(value);
 			if(sharedMusic is not null)sharedMusic.Paused=value;
+            foreach(var fade in _crossfadingSubEvents)fade.Voice.Voice.Paused=value;
             foreach(var overlay in overlayVoices)overlay.Handle.Paused=value;
             overlayLastClock=AudioSystem.TimelineScheduler.Now;
 
@@ -356,6 +359,7 @@ public sealed partial class AudioEventInstance
 		if ( !changed )
 			return;
 
+		UpdateParentLayers();
 		UpdateSharedMusicMix();
 		ApplyOverlayGain();
 		var masterChanged = ReferenceEquals( audioEvent.MasterTrack, track );
@@ -375,7 +379,30 @@ public sealed partial class AudioEventInstance
 		EnsureValid();
 		RefreshPlaybackState();
 		if ( _playbackState != AudioPlaybackState.Stopped )
-			ReevaluatePlayback( repositionExistingVoices: false );
+			ReevaluatePlayback( repositionExistingVoices: false, refreshSourcesForAudition: true );
+	}
+
+	/// <summary>Validate and apply numeric world facts together before one playback reevaluation.</summary>
+	public void SetParametersByName( IReadOnlyDictionary<string, float> values )
+	{
+		EnsureValid();
+		ArgumentNullException.ThrowIfNull( values );
+		var changes = new List<(AudioParameter Parameter, AudioParameterValue Value)>();
+		foreach ( var pair in values )
+		{
+			var parameter = RequireParameter( pair.Key );
+			if ( changes.Any(change => ReferenceEquals(change.Parameter, parameter)) )
+				throw new ArgumentException( $"Audio parameter '{pair.Key}' occurs more than once in the batch.", nameof(values) );
+			if ( parameter.Type == AudioParameterType.Labeled )
+				throw new InvalidOperationException( $"Audio parameter '{pair.Key}' is labeled." );
+			if ( !float.IsFinite(pair.Value) || pair.Value < parameter.Minimum || pair.Value > parameter.Maximum
+				|| parameter.Type == AudioParameterType.Discrete && MathF.Abs(pair.Value-MathF.Round(pair.Value)) > 0.0001f )
+				throw new ArgumentOutOfRangeException( nameof(values), $"Invalid value for audio parameter '{pair.Key}'." );
+			changes.Add( (parameter, new AudioParameterValue(pair.Value, null, false)) );
+		}
+		if ( changes.Count == 0 ) return;
+		foreach ( var change in changes ) _parameters[change.Parameter] = change.Value;
+		ReevaluateIfPlaying();
 	}
 
 	public void SetParameterByName( string name, float value )
@@ -414,9 +441,11 @@ public sealed partial class AudioEventInstance
 			Stop( AudioStopMode.Immediate );
 
 		ResetMusicRequests();
+		_instrumentTriggers.Clear();
 		_playbackCancellation?.Dispose();
 		_playbackCancellation = new CancellationTokenSource();
         ResetOverlays();
+        parentLayers.Clear();
 		_timelineAnchor = AudioSystem.TimelineScheduler.Now;
 		if(_music is not null)_timelinePosition=(float)_music.Start(_parameters,_timelinePosition);
         overlayGrid=_description.Resource.BeatGridAt(_timelinePosition);
@@ -440,6 +469,8 @@ public sealed partial class AudioEventInstance
 		EnsureValid();
 		if(sharedMusic is not null){StopSharedMusic(fadeTime);return;}
 		CancelMusicRequests();
+        foreach(var echo in echoVoices)echo.Voice.CancelEcho();echoVoices.Clear();
+        ClearSubEventCrossfades();
 		ClearPreparedSubEvents();
 		_pendingSubEvents.Clear();
 		_playbackCancellation?.Cancel();
@@ -463,15 +494,27 @@ public sealed partial class AudioEventInstance
 		_released = true;
 	}
 
-	private void ApplyInstanceGain()
+ private readonly List<(IAudioEchoVoice Voice,AudioTrack Track)> echoVoices=new();
+ private void UpdateEchoOwnership(PlayingVoice voice)
+ {
+  if(voice.Voice is not IAudioEchoVoice echo || voice.Instrument.Echo is null && !echo.EchoActive)return;
+  echo.SetEcho(voice.Instrument.Echo);
+  echoVoices.RemoveAll(v=>!v.Voice.EchoActive);
+  if(echo.EchoActive&&!echoVoices.Any(v=>ReferenceEquals(v.Voice,echo)))echoVoices.Add((echo,voice.Track));
+  echo.SuppressEcho(_volume==0 || _auditionMutedTracks.Contains(voice.Track) || _auditionMutedTracks.Contains(_description.Resource.MasterTrack));
+ }
+	private void ApplyInstanceGain(bool publishSharedMix = true)
 	{
-        UpdateSharedMusicMix();
+        UpdateSubEventCrossfades();
+        if (publishSharedMix) UpdateSharedMusicMix();
         ApplyOverlayGain();
+        echoVoices.RemoveAll(v=>!v.Voice.EchoActive);
+        foreach(var echo in echoVoices)echo.Voice.SuppressEcho(_volume==0 || _auditionMutedTracks.Contains(echo.Track) || _auditionMutedTracks.Contains(_description.Resource.MasterTrack));
 		foreach ( var voice in _voices )
 			ApplyGain( voice );
 	}
 
-	private void RefreshPlaybackState()
+	private void RefreshPlaybackState(bool publishSharedMix = true)
 	{
         AudioLiveDiagnostics.Register(this);
 		if ( _playbackState is not (AudioPlaybackState.Playing or AudioPlaybackState.Stopping) )
@@ -491,9 +534,10 @@ public sealed partial class AudioEventInstance
 		if ( !_paused )
 			ProcessTimelineControl();
         else _music?.PauseClock();
-        if(!_paused)UpdateOverlays();
+        if(!_paused){UpdateParentLayers();UpdateOverlays();}
+        if (!_paused && UpdateInstrumentTriggers()) ReevaluatePlayback(false);
 		if ( !_paused && _playbackState == AudioPlaybackState.Playing && (_pendingSubEvents.Count > 0 || _voices.Any(v => ShouldRotateSubEvent(v.Instrument, v.Voice as SubEventVoice))) ) ReevaluatePlayback( false );
-		ApplyInstanceGain();
+		ApplyInstanceGain(publishSharedMix);
 
 		if ( sharedMusic is null && _voices.All( voice => !voice.Pending && !voice.Voice.IsPlaying )
 			&& !HasConditionalPlayback()
@@ -520,7 +564,7 @@ public sealed partial class AudioEventInstance
 	private void ProcessTimelineControl()
 	{
 		var rawPosition = CurrentTimelinePosition;
-        if(handoffEntrySeconds>0 && rawPosition>=handoffEntrySeconds*2)handoffEntrySeconds=0;
+        if(handoffEntrySeconds>0 && rawPosition-handoffEntryStart>=handoffEntrySeconds*2)handoffEntrySeconds=0;
 		var sourceGrid = _description.Resource.BeatGridAt((double)_timelineDebug.CurrentSample / _description.Resource.TimelineSampleRate);
         var musicPosition = sourceGrid is null ? rawPosition : Math.Min(rawPosition, sourceGrid.End.Seconds - .00001);
         _music?.Update(musicPosition,AudioSystem.TimelineScheduler.Now,_parameters);
@@ -537,7 +581,7 @@ public sealed partial class AudioEventInstance
 		if ( jumped )
 		{
 			var retriggeredInstruments = PrepareLoopRetriggers( result.ExecutedLoopRegionIds );
-			if(sharedMusic is not null)sharedTimelineOffset+=((double)result.Position-rawSample)/_description.Resource.TimelineSampleRate;
+			if(sharedMusic is not null)sharedTimelineOffsetSamples+=(long)Math.Round(((double)result.Position-rawSample)*44100d/_description.Resource.TimelineSampleRate);
 			_timelinePosition = resolvedPosition;
 			_timelineAnchor = AudioSystem.TimelineScheduler.Now;
 			ReevaluatePlayback( repositionExistingVoices: true, retriggeredInstruments );
@@ -623,26 +667,28 @@ public sealed partial class AudioEventInstance
 	private void EnsureCanChangeParameters()
 	{
 		EnsureValid();
-		RefreshPlaybackState();
+		// The following parameter reevaluation publishes the current shared mix once.
+		RefreshPlaybackState(publishSharedMix: false);
 	}
 
 	private void ReevaluateIfPlaying()
 	{
-        if(!_paused && _playbackState==AudioPlaybackState.Playing)UpdateOverlays();
+        if(!_paused && _playbackState==AudioPlaybackState.Playing){UpdateParentLayers();UpdateOverlays();}
 		if ( _playbackState != AudioPlaybackState.Stopped )
 			ReevaluatePlayback( repositionExistingVoices: false );
 	}
 
 	private void ReevaluatePlayback(
 		bool repositionExistingVoices,
-		IReadOnlySet<AudioInstrument> retriggeredInstruments = null )
+		IReadOnlySet<AudioInstrument> retriggeredInstruments = null, bool refreshSourcesForAudition = false )
 	{
-		if(sharedMusic is not null){sharedMusic.UpdateParameters(_parameters);UpdateSharedMusicMix();return;}
+		if(sharedMusic is not null){UpdateSharedMusicMix(parametersChanged:true);return;}
+		UpdateInstrumentTriggers();
 		var position = CurrentTimelinePosition;
 		var requests = AudioEventEvaluator.BuildPlaybackPlan( _description.Resource, _parameters, SelectSoundTrack );
         if (_music is not null && _description.Resource.BeatGridAt(position) is { } musicGrid)
             requests = requests.Where(x => x.Instrument.StartTime >= musicGrid.Start.Seconds && x.Instrument.StartTime < musicGrid.End.Seconds).ToArray();
-		requests = requests.Where(x=>x.Track.Overlay?.Enabled!=true).ToArray();
+		requests = requests.Where(x=>x.Track.Overlay?.Enabled!=true && TriggerAllowsPlayback(x.Instrument)).ToArray();
 		var requestedInstruments = requests.Select( request => request.Instrument ).ToHashSet( ReferenceEqualityComparer.Instance );
 
 		for ( var i = _voices.Count - 1; i >= 0; i-- )
@@ -653,13 +699,17 @@ public sealed partial class AudioEventInstance
 
 			playingVoice.CancelScheduledStart();
 			playingVoice.CancelScheduledStop();
-			playingVoice.Voice.Stop( 0f );
+			if(playingVoice.Instrument.SubEventExitFadeSeconds>0 && playingVoice.Voice is SubEventVoice)RetainCrossfade(playingVoice,null);
+            else playingVoice.Voice.Stop( 0f );
 			_voices.RemoveAt( i );
 			CancelPreparedSubEvent(playingVoice.Instrument);
 			_selectedSubEvents.Remove( playingVoice.Instrument );
 			_pendingSubEvents.Remove( playingVoice.Instrument );
 		}
 
+		if(repositionExistingVoices)
+            foreach(var fade in _crossfadingSubEvents.Where(f=>!f.Voice.Instrument.RetainSubEventPositionOnTimelineJump).ToArray())
+            {fade.Voice.Voice.Stop(0);_crossfadingSubEvents.Remove(fade);}
 		var voicesToPosition = new List<PlayingVoice>();
 		foreach ( var request in requests )
 		{
@@ -672,10 +722,11 @@ public sealed partial class AudioEventInstance
 				playingVoice.CancelScheduledStart();
 				playingVoice.CancelScheduledStop();
 				changingChild = true;
-                existingChild.Stop( 0f );
+                RetainCrossfade(playingVoice,childChoice);
 				_voices.Remove( playingVoice );
 				playingVoice = null;
 			}
+			if(request.Instrument.IsSubEvent && childChoice is null)continue;
 			if ( playingVoice?.Voice is SubEventVoice completedChild && !completedChild.IsPlaying
 				&& !repositionExistingVoices && retriggeredInstruments is null ) continue;
 			if ( playingVoice is not null && (retriggeredInstruments?.Contains( request.Instrument ) ?? false) )
@@ -710,25 +761,27 @@ public sealed partial class AudioEventInstance
 
 				IAudioVoice voice = childChoice is null
 					? AudioSystem.Backend.Play( request.Sound, _attributes3D, !_hasAttributes3D )
-					: TakeSubEvent( request.Instrument, childChoice, MathF.Max( request.Instrument.StartTime, position ), changingChild ? request.Instrument.SubEventTransitionBeats : 0 );
+					: TakeSubEvent( request.Instrument, childChoice, MathF.Max( request.Instrument.StartTime, position ), changingChild ? childChoice.EntryFadeBeats ?? request.Instrument.SubEventTransitionBeats : 0 );
 				voice.Paused = true;
-				playingVoice = new PlayingVoice( request.Track, request.Instrument, request.SoundTrack, voice, voice.Volume, voice.Pitch );
+				playingVoice = new PlayingVoice( request.Track, request.Instrument, request.SoundTrack, voice, voice.Volume, voice.Pitch, request.SourceData );
+				if (_instrumentTriggers.TryGetValue(request.Instrument, out var trigger)) playingVoice.TriggeredStart = trigger.Start;
 				_voices.Add( playingVoice );
 				createdVoice = true;
 			}
 
+			if (refreshSourcesForAudition) playingVoice.RefreshSourceRanges(request.SourceData);
 			playingVoice.Track = request.Track;
 			if ( playingVoice.Voice is SubEventVoice childVoice )
 			{
 				childVoice.SyncParameters();
-				if ( repositionExistingVoices ) childVoice.ActivationPosition = playingVoice.Instrument.StartTime;
+				if ( repositionExistingVoices && !request.Instrument.RetainSubEventPositionOnTimelineJump ) childVoice.ActivationPosition = playingVoice.Instrument.StartTime;
 			}
 			playingVoice.EventVolume = request.Volume;
 			playingVoice.EventPitch = request.Pitch;
 			ApplyGain( playingVoice );
 			var trimChanged = playingVoice.AuthoredTrimStart != EffectiveTrimStart( playingVoice )
 				|| playingVoice.AuthoredTrimEnd != EffectiveTrimEnd( playingVoice );
-			if ( createdVoice || repositionExistingVoices || trimChanged )
+			if ( createdVoice || repositionExistingVoices && float.IsNaN(playingVoice.TriggeredStart) && !request.Instrument.RetainSubEventPositionOnTimelineJump || trimChanged )
 				voicesToPosition.Add( playingVoice );
 			playingVoice.AuthoredTrimStart = EffectiveTrimStart( playingVoice );
 			playingVoice.AuthoredTrimEnd = EffectiveTrimEnd( playingVoice );
@@ -761,7 +814,7 @@ public sealed partial class AudioEventInstance
 			{
 				foreach ( var instrument in track.Instruments )
 				{
-					if ( instrument.StartTime < loop.Start.Seconds || instrument.StartTime >= loop.End.Seconds )
+					if ( instrument.RetainSubEventPositionOnTimelineJump || instrument.LayerControl is not null || instrument.StartTriggerConditions.Count>0 || instrument.StartTime < loop.Start.Seconds || instrument.StartTime >= loop.End.Seconds )
 						continue;
 
 					_selectedTracks.Remove( instrument );
@@ -779,12 +832,12 @@ public sealed partial class AudioEventInstance
 	private bool HasConditionalPlayback()
 	{
 		var audioEvent = _description.Resource;
-		if ( audioEvent.MasterTrack.Conditions?.Count > 0 || audioEvent.MasterTrack.Instruments.Any( instrument => instrument.Conditions?.Count > 0 || (instrument.SubEvents?.Any( choice => choice.Conditions?.Count > 0 ) ?? false) ) )
+		if ( audioEvent.MasterTrack.Conditions?.Count > 0 || audioEvent.MasterTrack.Instruments.Any( instrument => instrument.Conditions?.Count > 0 || (instrument.SubEvents?.Any( choice => choice.Conditions?.Count > 0 || choice.EarlyEntryConditions?.Count > 0 ) ?? false) ) )
 			return true;
 
 		foreach ( var track in audioEvent.Tracks )
 		{
-			if ( track.Conditions?.Count > 0 || track.Instruments.Any( instrument => instrument.Conditions?.Count > 0 || (instrument.SubEvents?.Any( choice => choice.Conditions?.Count > 0 ) ?? false) ) )
+			if ( track.Conditions?.Count > 0 || track.Instruments.Any( instrument => instrument.Conditions?.Count > 0 || (instrument.SubEvents?.Any( choice => choice.Conditions?.Count > 0 || choice.EarlyEntryConditions?.Count > 0 ) ?? false) ) )
 				return true;
 		}
 		return false;
@@ -795,7 +848,8 @@ public sealed partial class AudioEventInstance
 		if ( _selectedTracks.TryGetValue( instrument, out var selected ) && eligibleTracks.Contains( selected ) )
 			return selected;
 
-		selected = instrument.Sound.SelectTrack( eligibleTracks );
+		var source = _description.Resource.Source(instrument);
+		selected = AudioSourceSelectionHistory.Select( source, source.SelectionMode, eligibleTracks );
 		_selectedTracks[instrument] = selected;
 		return selected;
 	}
@@ -867,6 +921,7 @@ public sealed partial class AudioEventInstance
 	private void ScheduleTrimStop( PlayingVoice playingVoice )
 	{
 		playingVoice.CancelScheduledStop();
+		if (!float.IsNaN(playingVoice.TriggeredStart)) return;
 		var trimEnd = ResolveTrimEnd( playingVoice );
 		if ( !float.IsFinite( trimEnd ) )
 			return;
@@ -883,7 +938,7 @@ public sealed partial class AudioEventInstance
 	}
 
 	private static float VoiceStartTime( PlayingVoice voice ) => voice.Voice is SubEventVoice child
-		? child.ActivationPosition : voice.Instrument.StartTime;
+		? child.ActivationPosition : float.IsNaN(voice.TriggeredStart) ? voice.Instrument.StartTime : voice.TriggeredStart;
 
 	private static float ResolveTrimEnd( PlayingVoice playingVoice )
 	{
@@ -928,6 +983,7 @@ public sealed partial class AudioEventInstance
 	private void ApplyGain( PlayingVoice playingVoice )
 	{
 		if (playingVoice.Voice is IAudioToneVoice tone) tone.SetTone(_description.Resource.MasterTrack.Tone, ReferenceEquals(playingVoice.Track, _description.Resource.MasterTrack) ? null : playingVoice.Track.Tone);
+		UpdateEchoOwnership(playingVoice);
 		var muted = _auditionMutedTracks.Contains( _description.Resource.MasterTrack )
 			|| _auditionMutedTracks.Contains( playingVoice.Track );
 		playingVoice.Voice.Volume = muted
@@ -939,7 +995,7 @@ public sealed partial class AudioEventInstance
 	private float InstrumentFadeGain( PlayingVoice playingVoice )
 	{
 		return AudioInstrumentFade.Gain(playingVoice.Instrument,
-			CurrentTimelinePosition-VoiceStartTime(playingVoice),
+			float.IsNaN(playingVoice.TriggeredStart) ? CurrentTimelinePosition-VoiceStartTime(playingVoice) : playingVoice.Voice.Time-EffectiveTrimStart(playingVoice),
 			ResolveTrimEnd(playingVoice)-EffectiveTrimStart(playingVoice),playingVoice.Pending);
 	}
 
@@ -947,12 +1003,14 @@ public sealed partial class AudioEventInstance
 	{
 		var position=CurrentTimelinePosition;
 		var gains=new Dictionary<AudioTrack,float>();
+        var blockedTails=new List<AudioTrack>();
 		foreach(var track in _description.Resource.Tracks.Prepend(_description.Resource.MasterTrack))
 		{
 			var muted=_auditionMutedTracks.Contains(_description.Resource.MasterTrack)||_auditionMutedTracks.Contains(track);
-			gains[track]=muted?0:_timelineControl.TransitionGain*(_music?.Gain(track,position)??1)*HandoffGain(track);
+			if(muted || blockedParentTails.Contains(track.Id))blockedTails.Add(track);
+			gains[track]=muted?0:_timelineControl.TransitionGain*(_music?.Gain(track,position)??1)*HandoffGain(track)*parentLayerGains.GetValueOrDefault(track.Id,1f);
 		}
-		return new AudioMusicMixState(position,gains);
+		return new AudioMusicMixState(position,gains,blockedTails);
 	}
 
 	private void EnsureValid()
@@ -963,7 +1021,7 @@ public sealed partial class AudioEventInstance
 
 	private sealed class PlayingVoice
 	{
-		public PlayingVoice( AudioTrack track, AudioInstrument instrument, SoundEventTrack soundTrack, IAudioVoice voice, float nativeVolume, float nativePitch )
+		public PlayingVoice( AudioTrack track, AudioInstrument instrument, SoundEventTrack soundTrack, IAudioVoice voice, float nativeVolume, float nativePitch, AudioSourceDefinition source )
 		{
 			Track = track;
 			Instrument = instrument;
@@ -971,18 +1029,36 @@ public sealed partial class AudioEventInstance
 			Voice = voice;
 			NativeVolume = nativeVolume;
 			NativePitch = nativePitch;
+			sourceVolume = source?.Volume ?? new(nativeVolume);
+			sourcePitch = source?.Pitch ?? new(nativePitch);
 		}
 
 		public AudioTrack Track { get; set; }
 		public AudioInstrument Instrument { get; }
 		public SoundEventTrack SoundTrack { get; }
 		public IAudioVoice Voice { get; }
-		public float NativeVolume { get; }
-		public float NativePitch { get; }
+		public float NativeVolume { get; private set; }
+		public float NativePitch { get; private set; }
+        private RangedFloat sourceVolume, sourcePitch;
+        public void RefreshSourceRanges(AudioSourceDefinition source)
+        {
+            if(source is null)return;
+            NativeVolume=RemapRange(NativeVolume,sourceVolume,source.Volume);
+            NativePitch=RemapRange(NativePitch,sourcePitch,source.Pitch);
+            sourceVolume=source.Volume;sourcePitch=source.Pitch;
+        }
+        private static float RemapRange(float selected,RangedFloat before,RangedFloat after)
+        {
+            if(before.Min==after.Min && before.Max==after.Max)return selected;
+            // Keep the original random position in the range; do not roll again on each edit.
+            var fraction=before.Max>before.Min?Math.Clamp((selected-before.Min)/(before.Max-before.Min),0f,1f):.5f;
+            return after.Min+(after.Max-after.Min)*fraction;
+        }
 		public float EventVolume { get; set; } = 1f;
 		public float EventPitch { get; set; } = 1f;
 		public float AuthoredTrimStart { get; set; }
 		public float AuthoredTrimEnd { get; set; }
+		public float TriggeredStart { get; set; } = float.NaN;
 		public bool Pending { get; set; }
 		public CancellationTokenSource ScheduleCancellation { get; set; }
 		public CancellationTokenSource StopCancellation { get; set; }
@@ -1012,10 +1088,37 @@ internal sealed record AudioVoiceRequest(
 	SoundEvent Sound,
 	float StartTime,
 	float Volume,
-	float Pitch );
+	float Pitch )
+{
+ internal AudioSourceDefinition SourceData {get;init;}
+}
+
+internal readonly record struct AudioVoiceMix(bool Active, float Volume, float Pitch);
 
 internal static class AudioEventEvaluator
 {
+    // Evaluate an already selected voice. Do not select sources or allocate native SoundEvents.
+    internal static AudioVoiceMix EvaluateSelectedVoice(AudioEvent resource, AudioVoiceRequest voice,
+        IReadOnlyDictionary<AudioParameter, AudioParameterValue> parameters)
+    {
+        var track=voice.Track; var instrument=voice.Instrument; var master=resource.MasterTrack;
+        var source=voice.SourceData;
+        if (!ReferenceEquals(track,master) && !resource.Tracks.Contains(track)
+            || !track.Instruments.Contains(instrument) || instrument.LayerControl is not null
+            || instrument.IsSubEvent || source is null || instrument.SourceId!=source.Id || !source.Tracks.Contains(voice.SoundTrack)
+            || !Matches(master.Conditions,parameters) || !Matches(track.Conditions,parameters)
+            || !Matches(instrument.Conditions,parameters) || !Matches(voice.SoundTrack.Conditions,parameters)) return default;
+        var volume=track.Volume*EvaluateAutomations(track.Automations,AudioAutomationTarget.Volume,parameters);
+        var pitch=track.Pitch*EvaluateAutomations(track.Automations,AudioAutomationTarget.Pitch,parameters);
+        if (!ReferenceEquals(track,master))
+        {
+            volume*=master.Volume*EvaluateAutomations(master.Automations,AudioAutomationTarget.Volume,parameters);
+            pitch*=master.Pitch*EvaluateAutomations(master.Automations,AudioAutomationTarget.Pitch,parameters);
+        }
+        return new(true,volume*EvaluateAutomations(instrument.Automations,AudioAutomationTarget.Volume,parameters),
+            pitch*EvaluateAutomations(instrument.Automations,AudioAutomationTarget.Pitch,parameters));
+    }
+
 	public static IReadOnlyList<AudioVoiceRequest> BuildPlaybackPlan(
 		AudioEvent audioEvent,
 		IReadOnlyDictionary<AudioParameter, AudioParameterValue> parameters,
@@ -1033,8 +1136,8 @@ internal static class AudioEventEvaluator
 			EvaluateTrack(
 				audioEvent,
 				track,
-				masterMatches && trackMatches ? audioEvent.MasterTrack.Volume : 0f,
-				audioEvent.MasterTrack.Pitch,
+				masterMatches && trackMatches ? audioEvent.MasterTrack.Volume * EvaluateAutomations(audioEvent.MasterTrack.Automations,AudioAutomationTarget.Volume,parameters) : 0f,
+				audioEvent.MasterTrack.Pitch * EvaluateAutomations(audioEvent.MasterTrack.Automations,AudioAutomationTarget.Pitch,parameters),
 				parameters,
 				requests,
 				selectTrack, includeInactive );
@@ -1055,24 +1158,27 @@ internal static class AudioEventEvaluator
 		var trackPitch = parentPitch * track.Pitch * EvaluateAutomations( track.Automations, AudioAutomationTarget.Pitch, parameters );
 		foreach ( var instrument in track.Instruments )
 		{
+			if ( instrument.LayerControl is not null ) continue;
 			var instrumentMatches = Matches( instrument.Conditions, parameters );
 			if ( !instrumentMatches && !includeInactive ) continue;
 			if ( instrument.IsSubEvent )
 			{
-				if ( instrument.SubEvents.Any( choice => Matches( choice.Conditions, parameters ) ) )
+				if ( instrument.SubEvents.Any( choice => choice.Eligible(parameters) ) )
 					requests.Add( new AudioVoiceRequest( track, instrument, null, null, instrument.StartTime,
 						trackVolume * EvaluateAutomations( instrument.Automations, AudioAutomationTarget.Volume, parameters ),
 						trackPitch * EvaluateAutomations( instrument.Automations, AudioAutomationTarget.Pitch, parameters ) ) );
 				continue;
 			}
-			var eligibleTracks = instrument.Sound.Tracks
+			var source=audioEvent.Source(instrument);
+			var eligibleTracks = source.Tracks
 				.Where( soundTrack => Matches( soundTrack.Conditions, parameters ) )
 				.ToArray();
 			var sourceMatches = eligibleTracks.Length > 0;
-			if ( !sourceMatches && includeInactive ) eligibleTracks = instrument.Sound.Tracks.ToArray();
+			if ( !sourceMatches && includeInactive ) eligibleTracks = source.Tracks.ToArray();
 			if ( eligibleTracks.Length == 0 ) continue;
+			// A plan without a playback owner must not advance audible variation history.
 			var soundTrack = selectTrack is null
-				? instrument.Sound.SelectTrack( eligibleTracks )
+				? eligibleTracks[Random.Shared.Next( eligibleTracks.Length )]
 				: selectTrack( instrument, eligibleTracks );
 			var volume = (instrumentMatches && sourceMatches ? trackVolume : 0f) * EvaluateAutomations( instrument.Automations, AudioAutomationTarget.Volume, parameters );
 			var pitch = trackPitch * EvaluateAutomations( instrument.Automations, AudioAutomationTarget.Pitch, parameters );
@@ -1080,10 +1186,10 @@ internal static class AudioEventEvaluator
 				track,
 				instrument,
 				soundTrack,
-				audioEvent.CreatePlaybackEvent( instrument.Sound, soundTrack ),
+				audioEvent.CreatePlaybackEvent( source, soundTrack ),
 				instrument.StartTime,
 				volume,
-				pitch ) );
+				pitch ) {SourceData=source} );
 		}
 	}
 
@@ -1091,8 +1197,9 @@ internal static class AudioEventEvaluator
 		IReadOnlyList<AudioParameterCondition> conditions,
 		IReadOnlyDictionary<AudioParameter, AudioParameterValue> parameters )
 	{
-		foreach ( var condition in conditions )
+		for ( var index = 0; index < conditions.Count; index++ )
 		{
+            var condition = conditions[index];
 			var value = parameters[condition.Parameter];
 			var matches = value.IsLabel
 				? string.Equals( value.Label, condition.Label, StringComparison.OrdinalIgnoreCase )
@@ -1103,14 +1210,15 @@ internal static class AudioEventEvaluator
 		return true;
 	}
 
-	private static float EvaluateAutomations(
+	internal static float EvaluateAutomations(
 		IReadOnlyList<AudioAutomation> automations,
 		AudioAutomationTarget target,
 		IReadOnlyDictionary<AudioParameter, AudioParameterValue> parameters )
 	{
 		var result = 1f;
-		foreach ( var automation in automations )
+		for ( var index = 0; index < automations.Count; index++ )
 		{
+            var automation = automations[index];
 			if ( automation.Target != target )
 				continue;
 			result *= automation.Evaluate( parameters[automation.Parameter].Number );
@@ -1173,11 +1281,35 @@ internal sealed class SboxAudioPlaybackBackend : IAudioPlaybackBackend
 	}
 }
 
-internal sealed class SboxAudioVoice : IAudioVoice, IAudioToneVoice
+internal sealed class SboxAudioVoice : IAudioVoice, IAudioToneVoice, IAudioEchoVoice
 {
 	private readonly SoundHandle _handle;
 	private Sandbox.Audio.Mixer toneMixer;
 	private AudioToneProcessor toneProcessor;
+ internal Sandbox.Audio.Mixer EffectMixerForCheck=>toneMixer;
+ private AudioEchoProcessor echoProcessor;
+ private SoundHandle echoCarrier;
+ private static SoundFile echoClock;
+ public bool EchoActive=>echoProcessor is not null && !echoProcessor.Finished;
+ private void EnsureEffectMixer()
+ {
+  if(toneMixer is not null)return;
+  toneMixer=(_handle.TargetMixer??Sandbox.Audio.Mixer.Default).AddChild();
+  toneMixer.Name=$"Smod effects {Guid.NewGuid()}";_handle.TargetMixer=toneMixer;
+  _=RetireToneMixer();
+ }
+ public void SetEcho(AudioEchoEffect effect)
+ {
+  if(effect is null || !effect.IsValid || effect.WetGain==0 || echoProcessor is not null || _handle.IsStopped)return;
+  EnsureEffectMixer();echoProcessor=new(effect);toneMixer.AddProcessor(echoProcessor);
+  echoClock??=SoundFile.FromPcm("smod/runtime/echo_clock.vsnd",new byte[4096],new SoundFile.PcmOptions{Channels=2,Rate=44100,Bits=16,Loop=true});
+  echoCarrier=Sound.PlayFile(echoClock,1);echoCarrier.TargetMixer=toneMixer;echoCarrier.SpacialBlend=0;
+  echoCarrier.ListenLocal=true;echoCarrier.DistanceAttenuation=false;echoCarrier.AirAbsorption=false;
+  echoCarrier.OcclusionEnabled=false;echoCarrier.ReverbEnabled=false;
+ }
+ public void CancelEcho(){if(echoProcessor is not null)echoProcessor.Killed=true;echoCarrier?.Stop();}
+ public void PauseEcho(bool paused){if(echoProcessor is not null)echoProcessor.Paused=paused;}
+ public void SuppressEcho(bool suppressed){if(echoProcessor is not null)echoProcessor.Suppressed=suppressed;}
 	public void SetTone(AudioTone master, AudioTone track)
 	{
 		if (master is { IsValid: false } || track is { IsValid: false }) return;
@@ -1185,21 +1317,30 @@ internal sealed class SboxAudioVoice : IAudioVoice, IAudioToneVoice
 		{
 			if ((master?.BassGainDb ?? 0) == 0 && (track?.BassGainDb ?? 0) == 0) return;
 			if (_handle.IsStopped) return;
-			toneMixer = (_handle.TargetMixer ?? Sandbox.Audio.Mixer.Default).AddChild();
-			toneMixer.Name = $"Smod tone {Guid.NewGuid()}";
+			EnsureEffectMixer();
 			toneProcessor = new();
 			toneProcessor.Configure(master, track);
 			toneMixer.AddProcessor(toneProcessor);
 			_handle.TargetMixer = toneMixer;
-			_ = RetireToneMixer();
+
 		}
 		else toneProcessor.Configure(master, track);
 	}
 	private async Task RetireToneMixer()
 	{
 		// Retain the route through pause, Release, and native fade-out.
-		try { while (!_handle.IsStopped) await GameTask.DelaySeconds(.1f); }
-		finally { toneMixer.ClearProcessors(); toneMixer.Destroy(); }
+		try
+  {
+   while(!_handle.IsStopped)await GameTask.DelayRealtime(10);
+   echoProcessor?.BeginTail();
+   var clock=System.Diagnostics.Stopwatch.StartNew();double elapsed=0,last=0;
+   while(EchoActive && echoCarrier is {IsStopped:false} && elapsed<5)
+   {
+    await GameTask.DelayRealtime(10);var now=clock.Elapsed.TotalSeconds;
+    if(!echoProcessor.Paused)elapsed+=now-last;last=now;
+   }
+  }
+  finally {echoCarrier?.Stop();toneMixer.ClearProcessors();toneMixer.Destroy();toneMixer=null;}
 	}
 
 
@@ -1210,7 +1351,7 @@ internal sealed class SboxAudioVoice : IAudioVoice, IAudioToneVoice
 
 	public bool IsPlaying => _handle.IsPlaying && !_handle.IsStopped;
 	public SoundFile SelectedSound => _handle.SoundFile;
-	public bool Paused { get => _handle.Paused; set => _handle.Paused = value; }
+	public bool Paused { get => _handle.Paused; set { _handle.Paused = value; PauseEcho(value); } }
 	public float Time { get => _handle.Time; set => _handle.Time = value; }
 	public float Volume { get => _handle.Volume; set => _handle.Volume = value; }
 	public float Pitch { get => _handle.Pitch; set => _handle.Pitch = value; }

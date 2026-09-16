@@ -4,6 +4,8 @@ public sealed partial class AudioEventTests
 {
  sealed class EventMusicSessionFake : IAudioMusicEventSession
  {
+  public long EndSample=long.MaxValue;
+  public void LimitPlaybackTo(long sample)=>EndSample=sample;
   public TaskCompletionSource<bool> FadeGate;
   public float FadeSeconds;
   public Task StopWithFadeAsync(float seconds){FadeSeconds=seconds;return FadeGate?.Task??StopAsync();}
@@ -18,12 +20,13 @@ public sealed partial class AudioEventTests
   public readonly TaskCompletionSource<AudioMusicPcmSession.Scheduled> Phrase=new();
   public int PhraseCalls;
   public AudioEventInstance RequestedProcess;
-  public Task<AudioMusicPcmSession.Scheduled> PrepareAndScheduleAsync(AudioEventInstance process,AudioInstrument instrument,SoundEventTrack source,AudioTone masterTone,AudioTone trackTone,int quantumBeats,float gain)
+  public Task<AudioMusicPcmSession.Scheduled> PrepareAndScheduleAsync(AudioEventInstance process,AudioInstrument instrument,SoundEventTrack source,AudioTone masterTone,AudioTone trackTone,double quantumBeats,float gain)
   {PhraseCalls++;RequestedProcess=process;return Phrase.Task;}
+  public long? RequestedChainSample;
   public AudioMusicRequestOwner RequestedOwner;
   public Func<AudioMusicRequestOwner,Task<AudioMusicPcmSession.Scheduled>> PhraseFactory;
-  public Task<AudioMusicPcmSession.Scheduled> PrepareOwnedPhraseAsync(AudioMusicRequestOwner owner,AudioInstrument instrument,SoundEventTrack source,AudioTone masterTone,AudioTone trackTone,int quantumBeats,float gain)
-  {RequestedOwner=owner;PhraseCalls++;return PhraseFactory?.Invoke(owner)??Phrase.Task;}
+  public Task<AudioMusicPcmSession.Scheduled> PrepareOwnedPhraseAsync(AudioMusicRequestOwner owner,AudioInstrument instrument,SoundEventTrack source,AudioTone masterTone,AudioTone trackTone,double quantumBeats,float gain,long? chainSample=null,int? schedulingLeadSamples=null)
+  {RequestedChainSample=chainSample;RequestedOwner=owner;PhraseCalls++;return PhraseFactory?.Invoke(owner)??Phrase.Task;}
   public float Volume{get;set;}
   public bool Paused{get;set;}
   public int Disposals,Updates;
@@ -145,6 +148,34 @@ public sealed partial class AudioEventTests
   await owner.StartAsync(new AudioBeatGrid{End=new(2.4),BeatsPerMinute=100},new Dictionary<AudioParameter,AudioParameterValue>());
   var stopping=owner.StopAsync(.5f);Assert.AreEqual(.5f,session.FadeSeconds);Assert.IsFalse(stopping.IsCompleted);Assert.AreEqual(0,session.Disposals);
   owner.Dispose();await stopping;Assert.AreEqual(1,session.Disposals);
+ }
+ [TestMethod] public async Task MusicEventOwner_UpdateStateCopiesCallerFactsAndPublishesOneMix()
+ {
+  var graph=CreateEvent();
+  var fact=new AudioParameter{Name="Pressure",Minimum=0,Maximum=1};
+  graph.Parameters.Add(fact);
+  var session=new EventMusicSessionFake();session.Loaded.SetResult(true);
+  using var owner=new AudioMusicEventPlayback(graph,()=>session);
+  var initial=new Dictionary<AudioParameter,AudioParameterValue>{{fact,new(0,null,false)}};
+  await owner.StartAsync(new AudioBeatGrid{End=new(2.4),BeatsPerMinute=100},initial);
+  var values=new Dictionary<AudioParameter,AudioParameterValue>{{fact,new(.75f,null,false)}};
+  var gains=new Dictionary<AudioTrack,float>{{graph.MasterTrack,.35f}};
+  var mix=new AudioMusicMixState(1.25f,gains);
+  var before=session.Updates;
+  owner.UpdateState(values,mix);
+  values[fact]=new(.1f,null,false);
+  gains[graph.MasterTrack]=.9f;
+  Assert.AreEqual(before+1,session.Updates,
+   "UpdateState must publish one combined parameter and mix update.");
+  Assert.AreNotSame(values,session.LastParameters,
+   "The playback owner must copy the caller parameter dictionary.");
+  Assert.AreEqual(.75f,session.LastParameters[fact].Number,.00001f,
+   "A caller mutation must not change the published parameter value.");
+  Assert.AreSame(mix,session.LastMix,
+   "The combined update must publish the supplied mix.");
+  Assert.AreEqual(.35f,session.LastMix.Gain(graph.MasterTrack),.00001f,
+   "The mix must retain its copied track gain after the caller mutates its dictionary.");
+  await owner.StopAsync();
  }
 
 }

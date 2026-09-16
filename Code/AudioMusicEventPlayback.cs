@@ -30,9 +30,11 @@ internal sealed class AudioMusicEventPlayback : IDisposable
   ArgumentNullException.ThrowIfNull(resource);this.resource=resource;
   this.create=create??(()=>new AudioMusicRuntimeSession(maximumBytes:DefaultPreparationBudgetBytes));
  }
+ internal int NativeDecodeCount=>current is AudioMusicRuntimeSession runtime?runtime.NativeDecodeCount:0;
  public bool IsRunning=>current is not null && ReferenceEquals(current,readySession) && current.IsRunning;
  /// <summary>The current session's published sample clock; no wall-clock estimate.</summary>
  public long Position=>IsRunning?current.Position:0;
+ public void LimitPlaybackTo(long sample){if(IsRunning)current.LimitPlaybackTo(sample);}
  internal IReadOnlyList<AudioMusicRuntimeSession.BackingPart> BackingParts=>current?.BackingParts??Array.Empty<AudioMusicRuntimeSession.BackingPart>();
  internal IReadOnlyList<float> BackingGains=>current?.BackingGains??Array.Empty<float>();
  public Task<bool> Seek(long sample)
@@ -45,23 +47,23 @@ internal sealed class AudioMusicEventPlayback : IDisposable
  }
  /// <summary>Submit a process phrase to this song generation. The runtime owns source preparation,
  /// beat selection and cancellation; a replaced song never accepts an old completion.</summary>
- public async Task<AudioMusicPcmSession.Scheduled> PrepareAndScheduleAsync(AudioEventInstance process,AudioInstrument instrument,SoundEventTrack source,AudioTone masterTone,AudioTone trackTone,int quantumBeats,float gain)
+ public async Task<AudioMusicPcmSession.Scheduled> PrepareAndScheduleAsync(AudioEventInstance process,AudioInstrument instrument,SoundEventTrack source,AudioTone masterTone,AudioTone trackTone,double quantumBeats,float gain)
  {
   ArgumentNullException.ThrowIfNull(process);
   ArgumentNullException.ThrowIfNull(instrument);
   ArgumentNullException.ThrowIfNull(source);
-  if(quantumBeats<1)throw new ArgumentOutOfRangeException(nameof(quantumBeats));
-  if(!float.IsFinite(gain)||gain<0||gain>1)throw new ArgumentOutOfRangeException(nameof(gain));
+  if((!double.IsFinite(quantumBeats)||quantumBeats<.125))throw new ArgumentOutOfRangeException(nameof(quantumBeats));
+  if(!float.IsFinite(gain)||gain<0)throw new ArgumentOutOfRangeException(nameof(gain));
   var session=current;
   if(disposed || !IsRunning)return null;
   var owner=process.MusicRequestOwner;
   var scheduled=await session.PrepareAndScheduleAsync(process,instrument,source,masterTone,trackTone,quantumBeats,gain);
   return !disposed && ReferenceEquals(current,session) && session.IsRunning && !owner.IsCancelled ? scheduled : null;
  }
- internal async Task<AudioMusicPcmSession.Scheduled> PrepareOwnedPhraseAsync(AudioMusicRequestOwner owner,AudioInstrument instrument,SoundEventTrack source,AudioTone masterTone,AudioTone trackTone,int quantumBeats,float gain)
+ internal async Task<AudioMusicPcmSession.Scheduled> PrepareOwnedPhraseAsync(AudioMusicRequestOwner owner,AudioInstrument instrument,SoundEventTrack source,AudioTone masterTone,AudioTone trackTone,double quantumBeats,float gain,long? chainSample=null,int? schedulingLeadSamples=null)
  {
   var session=current;if(disposed || !IsRunning || owner.IsCancelled)return null;
-  var result=await session.PrepareOwnedPhraseAsync(owner,instrument,source,masterTone,trackTone,quantumBeats,gain);
+  var result=await session.PrepareOwnedPhraseAsync(owner,instrument,source,masterTone,trackTone,quantumBeats,gain,chainSample,schedulingLeadSamples);
   return !disposed && ReferenceEquals(current,session) && session.IsRunning && !owner.IsCancelled ? result : null;
  }
  public float Volume
@@ -79,6 +81,15 @@ internal sealed class AudioMusicEventPlayback : IDisposable
  {
   ArgumentNullException.ThrowIfNull(values);
   parameters=values.ToDictionary(item=>item.Key,item=>item.Value);
+  if(IsRunning)current.UpdateEventParameters(parameters,mix);
+ }
+ /// <summary>Publish one copied fact set and its current mix together.</summary>
+ public void UpdateState(IReadOnlyDictionary<AudioParameter,AudioParameterValue> values,AudioMusicMixState value)
+ {
+  ArgumentNullException.ThrowIfNull(values);
+  ArgumentNullException.ThrowIfNull(value);
+  parameters=values.ToDictionary(item=>item.Key,item=>item.Value);
+  mix=value;
   if(IsRunning)current.UpdateEventParameters(parameters,mix);
  }
  public async Task<bool> StartAsync(AudioBeatGrid grid,IReadOnlyDictionary<AudioParameter,AudioParameterValue> values,long initialSample=0)
@@ -140,13 +151,14 @@ internal interface IAudioMusicEventSession : IDisposable
  IReadOnlyList<float> BackingGains {get;}
  bool IsRunning {get;}
  long Position {get;}
+ void LimitPlaybackTo(long sample);
  Task<bool> Seek(long sample);
  float Volume {get;set;}
  bool Paused {get;set;}
  Task<bool> StartEventBackingAsync(AudioEvent resource,AudioBeatGrid grid,IReadOnlyDictionary<AudioParameter,AudioParameterValue> parameters);
  void UpdateEventParameters(IReadOnlyDictionary<AudioParameter,AudioParameterValue> parameters,AudioMusicMixState mix=null);
- Task<AudioMusicPcmSession.Scheduled> PrepareAndScheduleAsync(AudioEventInstance process,AudioInstrument instrument,SoundEventTrack source,AudioTone masterTone,AudioTone trackTone,int quantumBeats,float gain);
- Task<AudioMusicPcmSession.Scheduled> PrepareOwnedPhraseAsync(AudioMusicRequestOwner owner,AudioInstrument instrument,SoundEventTrack source,AudioTone masterTone,AudioTone trackTone,int quantumBeats,float gain);
+ Task<AudioMusicPcmSession.Scheduled> PrepareAndScheduleAsync(AudioEventInstance process,AudioInstrument instrument,SoundEventTrack source,AudioTone masterTone,AudioTone trackTone,double quantumBeats,float gain);
+ Task<AudioMusicPcmSession.Scheduled> PrepareOwnedPhraseAsync(AudioMusicRequestOwner owner,AudioInstrument instrument,SoundEventTrack source,AudioTone masterTone,AudioTone trackTone,double quantumBeats,float gain,long? chainSample=null,int? schedulingLeadSamples=null);
  Task StopAsync();
  Task StopWithFadeAsync(float seconds);
 }

@@ -14,9 +14,9 @@ public sealed class AudioBeatGrid
         && BeatsPerBar > 0 && BarsPerPhrase > 0 && End.Seconds > Start.Seconds;
 
     /// <summary>Next quantized sample at or after earliestSample. Null means the grid has no remaining boundary. End is exclusive. Computes from the grid origin, without adding rounded beat lengths.</summary>
-    internal long? NextSampleBoundary( long earliestSample, int sampleRate, int quantumBeats )
+    internal long? NextSampleBoundary( long earliestSample, int sampleRate, double quantumBeats )
     {
-        if ( !IsValid || earliestSample < 0 || sampleRate < 1 || quantumBeats < 1 )
+        if ( !IsValid || earliestSample < 0 || sampleRate < 1 || (!double.IsFinite(quantumBeats)||quantumBeats < .125) )
             throw new ArgumentOutOfRangeException( nameof( earliestSample ) );
         var origin = Start.Seconds * sampleRate;
         var quantum = SecondsPerBeat * sampleRate * quantumBeats;

@@ -2,11 +2,245 @@ using Smod;
 using System.Threading.Tasks;
 public sealed partial class AudioEventTests
 {
+ [TestMethod]
+ public void SharedOverlay_QuarterBeatCooldownIsValidButZeroIsNot()
+ {
+  var song=SharedOverlaySong();song.Tracks[0].Overlay.CooldownBeats=.25f;
+  Assert.IsTrue(AudioEventValidator.Validate(song).IsValid);
+  song.Tracks[0].Overlay.CooldownBeats=0;
+  Assert.IsFalse(AudioEventValidator.Validate(song).IsValid);
+ }
+ [TestMethod]
+ public void SharedOverlay_WithdrawnChainLoadCannotBlockFutureServices()
+ {
+  var song=SharedOverlaySong();var rule=song.Tracks[0].Overlay;rule.MaximumChainPhrases=3;rule.ChainRestBeats=1;
+  var enabled=new AudioParameter{Name="Enabled",Minimum=0,Maximum=1,DefaultValue=1};song.Parameters.Add(enabled);
+  rule.Conditions=new(){Conditions=new(){new(){Parameter=enabled,Comparison=AudioParameterComparison.Equal,Value=1}}};
+  var session=new EventMusicSessionFake();session.Loaded.SetResult(true);
+  var loading=new TaskCompletionSource<AudioMusicPcmSession.Scheduled>();
+  session.PhraseFactory=owner=>session.PhraseCalls==1?loading.Task:Task.FromResult(new AudioMusicPcmSession.Scheduled(52920,Task.FromResult(true)));
+  var instance=AudioSystem.GetEvent(song).CreateInstance();instance.SharedMusicSessionFactory=()=>session;
+  try
+  {
+   instance.Start();instance.SetParameterByName("Service",1);var withdrawn=session.RequestedOwner;
+   instance.SetParameterByName("Enabled",0);Assert.IsTrue(withdrawn.IsCancelled);
+   session.Position=26460;instance.SetParameterByName("Enabled",1);instance.SetParameterByName("Service",2);
+   Assert.AreEqual(2,session.PhraseCalls,"A withdrawn first load must not leave the chain active forever.");
+   var current=session.RequestedOwner;loading.SetResult(new(26460,Task.FromResult(true)));
+   Assert.IsFalse(current.IsCancelled);Assert.AreEqual(2,session.PhraseCalls);
+  }
+  finally{instance.Stop(AudioStopMode.Immediate);instance.Release();}
+ }
+ [TestMethod]
+ public void SharedOverlay_SuccessChainIsBoundedPreservesTailsAndDiscardsRestTriggers()
+ {
+  var song=SharedOverlaySong();song.TimelineDuration=24;song.MasterTrack.Instruments[0].TrimEnd=24;song.BeatGrids[0].End=new(24);song.LoopRegions[0].End=new(24);
+  var track=song.Tracks[0];var rule=track.Overlay;
+  rule.MaximumChainPhrases=3;rule.ChainRestBeats=4;rule.CooldownBeats=16;
+  rule.QueueWhilePlaying=false;rule.IgnoreTriggersDuringCooldown=true;
+  track.Instruments[0].TrimEnd=1.2f;track.Instruments[0].OverlayBodySeconds=.6f;
+  var session=new EventMusicSessionFake();session.Loaded.SetResult(true);
+  var owners=new List<AudioMusicRequestOwner>();
+  session.PhraseFactory=owner=>{owners.Add(owner);return Task.FromResult(new AudioMusicPcmSession.Scheduled(session.RequestedChainSample ?? session.Position+26460,Task.FromResult(true)));};
+  var instance=AudioSystem.GetEvent(song).CreateInstance();instance.SharedMusicSessionFactory=()=>session;
+  try
+  {
+   instance.Start();instance.SetParameterByName("Service",1);
+   session.Position=26460;instance.SetParameterByName("Service",2);
+   Assert.AreEqual(2,session.PhraseCalls);Assert.AreEqual(52920L,session.RequestedChainSample);
+   Assert.IsFalse(owners[0].IsCancelled,"A continuation must preserve the first tail.");
+   instance.SetParameterByName("Service",3);instance.SetParameterByName("Service",4);
+   Assert.AreEqual(2,session.PhraseCalls,"Only one following phrase can occupy the tail overlap slot.");
+   // The retained tail fills the second body; the exact third join is now too late.
+   session.Position=79380;instance.RefreshAuthoredPropertiesForAudition();
+   Assert.AreEqual(2,session.PhraseCalls,"A missed exact join is dropped, never shifted to a late beat.");
+   session.Position=211680;instance.RefreshAuthoredPropertiesForAudition();
+   Assert.AreEqual(2,session.PhraseCalls,"Old services cannot restart after the rest.");
+   instance.SetParameterByName("Service",5);Assert.AreEqual(3,session.PhraseCalls);
+  }
+  finally{instance.Stop(AudioStopMode.Immediate);instance.Release();}
+  Assert.IsTrue(owners.All(o=>o.IsCancelled));
+ }
+ [TestMethod]
+ public void SharedOverlay_ThreePhraseCapThenFullRestEvenWithContinuousSuccess()
+ {
+  var song=SharedOverlaySong();song.TimelineDuration=24;song.MasterTrack.Instruments[0].TrimEnd=24;song.BeatGrids[0].End=new(24);song.LoopRegions[0].End=new(24);
+  var track=song.Tracks[0];var rule=track.Overlay;
+  rule.MaximumChainPhrases=3;rule.ChainRestBeats=4;rule.CooldownBeats=16;
+  track.Instruments[0].TrimEnd=.75f;track.Instruments[0].OverlayBodySeconds=.6f;
+  var session=new EventMusicSessionFake();session.Loaded.SetResult(true);
+  session.PhraseFactory=owner=>Task.FromResult(new AudioMusicPcmSession.Scheduled(session.RequestedChainSample ?? session.Position+26460,Task.FromResult(true)));
+  var instance=AudioSystem.GetEvent(song).CreateInstance();instance.SharedMusicSessionFactory=()=>session;
+  try
+  {
+   instance.Start();instance.SetParameterByName("Service",1);
+   session.Position=26460;instance.SetParameterByName("Service",2);instance.SetParameterByName("Service",3);
+   session.Position=60000;instance.RefreshAuthoredPropertiesForAudition();
+   Assert.AreEqual(3,session.PhraseCalls);Assert.AreEqual(79380L,session.RequestedChainSample);
+   instance.SetParameterByName("Service",4);session.Position=120000;instance.SetParameterByName("Service",5);
+   Assert.AreEqual(3,session.PhraseCalls);
+   session.Position=218295;instance.RefreshAuthoredPropertiesForAudition();Assert.AreEqual(3,session.PhraseCalls);
+   instance.SetParameterByName("Service",6);Assert.AreEqual(4,session.PhraseCalls,"A fresh success can start after the complete tail plus four-beat rest.");
+  }
+  finally{instance.Stop(AudioStopMode.Immediate);instance.Release();}
+ }
+ [TestMethod]
+ public void SharedOverlay_ChainValidationRejectsUnboundedAndUnsupportedRules()
+ {
+  var song=SharedOverlaySong();var rule=song.Tracks[0].Overlay;
+  rule.MaximumChainPhrases=3;Assert.IsTrue(AudioEventValidator.Validate(song).IsValid);
+  rule.MaximumChainPhrases=0;Assert.IsFalse(AudioEventValidator.Validate(song).IsValid);
+  rule.MaximumChainPhrases=9;Assert.IsFalse(AudioEventValidator.Validate(song).IsValid);
+  rule.MaximumChainPhrases=3;rule.ChainRestBeats=0;Assert.IsFalse(AudioEventValidator.Validate(song).IsValid);
+  rule.ChainRestBeats=4;song.SharedMusicOutput=false;Assert.IsFalse(AudioEventValidator.Validate(song).IsValid);
+ }
+ [TestMethod]
+ public void SharedOverlay_DistantLeadCannotReturnAfterItsDeadline()
+ {
+  var song=SharedOverlaySong();song.TimelineDuration=24;song.MasterTrack.Instruments[0].TrimEnd=24;
+  song.BeatGrids[0].End=new(24);song.LoopRegions[0].End=new(24);
+  var lead=song.Tracks[0];lead.Overlay.VoiceGroup="response";
+  lead.Instruments[0].OverlayBars=new(){5};lead.Instruments[0].MaximumMusicWaitBeats=2;
+  var session=new EventMusicSessionFake();session.Loaded.SetResult(true);
+  session.Phrase.SetResult(new(423360,Task.FromResult(true)));
+  var instance=AudioSystem.GetEvent(song).CreateInstance();instance.SharedMusicSessionFactory=()=>session;
+  try
+  {
+   instance.Start();instance.SetParameterByName("Service",1);
+   Assert.AreEqual(0,session.PhraseCalls,"A bar 9.6 seconds away exceeds the 1.2-second deadline.");
+   session.Position=414540;instance.RefreshAuthoredPropertiesForAudition();
+   Assert.AreEqual(0,session.PhraseCalls,"The expired action cannot return when its bar approaches.");
+   instance.SetParameterByName("Service",2);Assert.AreEqual(1,session.PhraseCalls);
+  }
+  finally{instance.Stop(AudioStopMode.Immediate);instance.Release();}
+ }
+
+ [TestMethod]
+ [DataRow(false,false)] [DataRow(true,false)] [DataRow(false,true)]
+ public void SharedOverlay_ActionReplacesOnlyUnstartedActivity(bool workStarted,bool noTimelyEntry)
+ {
+  var song=SharedOverlaySong();var action=song.Tracks[0];action.Overlay.VoiceGroup="drums";action.Overlay.QueueWhilePlaying=false;action.Overlay.IgnoreTriggersDuringCooldown=true;
+  var work=new AudioParameter{Name="Work",Minimum=0,Maximum=1};song.Parameters.Add(work);
+  song.Tracks.Add(new(){Name="Work",Overlay=new(){Enabled=true,VoiceGroup="drums",BeatGridName="Song",BeatsPerMinute=100,QuantizationBeats=1,CooldownBeats=1,
+   ActivityConditions=new(){Conditions=new(){new(){Parameter=work,Comparison=AudioParameterComparison.GreaterOrEqual,Value=1}}}},
+   Instruments=new(){AddSourceInstrument(song, instrument => instrument.TrimEnd=.6f)}});
+  var session=new EventMusicSessionFake();session.Loaded.SetResult(true);
+  session.PhraseFactory=owner=>Task.FromResult(new AudioMusicPcmSession.Scheduled(26460,Task.FromResult(true)));
+  var instance=AudioSystem.GetEvent(song).CreateInstance();instance.SharedMusicSessionFactory=()=>session;
+  try
+  {
+   instance.Start();instance.SetParameterByName("Work",1);var waitingWork=session.RequestedOwner;
+   if(workStarted)session.Position=26460;
+   if(noTimelyEntry){action.Instruments[0].OverlayBars=new(){5};action.Instruments[0].MaximumMusicWaitBeats=1;}
+   instance.SetParameterByName("Service",1);
+   if(workStarted || noTimelyEntry)
+   {
+    Assert.AreEqual(1,session.PhraseCalls);Assert.IsFalse(waitingWork.IsCancelled,"Preserve audible work and work with no timely replacement.");return;
+   }
+   Assert.AreEqual(2,session.PhraseCalls,"An action must replace activity that has not sounded yet.");
+   Assert.IsTrue(waitingWork.IsCancelled);var actionOwner=session.RequestedOwner;
+   Assert.AreEqual(.5f,actionOwner.Gain);
+   session.Position=26460;instance.SetParameterByName("Service",2);
+   Assert.AreEqual(2,session.PhraseCalls);Assert.IsFalse(actionOwner.IsCancelled,"Do not cut an audible set.");
+  }
+  finally {instance.Stop(AudioStopMode.Immediate);instance.Release();}
+ }
+
  static AudioEvent SharedOverlaySong()
  {
   var e=SharedSong();var action=new AudioParameter{Name="Service",Type=AudioParameterType.Discrete,Minimum=0,Maximum=10};e.Parameters.Add(action);
   e.Tracks.Add(new(){Name="Action",Overlay=new(){Enabled=true,TriggerParameter=action,BeatGridName="Song",BeatsPerMinute=100,QuantizationBeats=1,CooldownBeats=1,Volume=.5f},
-   Instruments=new(){new(){Sound=CreateSoundEvent(),TrimEnd=.6f,FadeInDuration=.01f}}});return e;
+   Instruments=new(){AddSourceInstrument(e, instrument => { instrument.TrimEnd=.6f;instrument.FadeInDuration=.01f; })}});return e;
+ }
+ [TestMethod] public void SharedOverlay_WithdrawnPreparationCannotDelayTheNextWorkPhrase()
+ {
+  var song=SharedOverlaySong();var rule=song.Tracks[0].Overlay;
+  rule.TriggerParameter=null;
+  rule.ActivityConditions=new(){Conditions=new(){new(){Parameter=song.Parameters[0],Comparison=AudioParameterComparison.GreaterOrEqual,Value=1}}};
+  var session=new EventMusicSessionFake();session.Loaded.SetResult(true);
+  var oldPreparation=new TaskCompletionSource<AudioMusicPcmSession.Scheduled>();
+  session.PhraseFactory=owner=>session.PhraseCalls==1 ? oldPreparation.Task : Task.FromResult(new AudioMusicPcmSession.Scheduled(26460,Task.FromResult(true)));
+  var instance=AudioSystem.GetEvent(song).CreateInstance();instance.SharedMusicSessionFactory=()=>session;
+  try
+  {
+   instance.Start();instance.SetParameterByName("Service",1);
+   var oldOwner=session.RequestedOwner;
+   instance.SetParameterByName("Service",0);Assert.IsTrue(oldOwner.IsCancelled);
+   oldPreparation.SetResult(new(26460,Task.FromResult(true)));
+   instance.SetParameterByName("Service",1);
+   Assert.AreEqual(2,session.PhraseCalls,"A cancelled load must not add a cooldown to new work.");
+   Assert.IsFalse(session.RequestedOwner.IsCancelled);
+   Assert.AreEqual(0,session.Disposals);
+  }
+  finally {instance.Stop(AudioStopMode.Immediate);instance.Release();}
+ }
+ [TestMethod] public void SharedOverlay_AuthoredBoostSurvivesValidationTriggerAndLiveGainRefresh()
+ {
+  var song=SharedOverlaySong();song.Tracks[0].Volume=4;
+  Assert.IsTrue(AudioEventValidator.Validate(song).IsValid);
+  var session=new EventMusicSessionFake();session.Loaded.SetResult(true);session.Phrase.SetResult(new(26460,Task.FromResult(true)));
+  var instance=AudioSystem.GetEvent(song).CreateInstance();instance.SharedMusicSessionFactory=()=>session;
+  try
+  {
+   instance.Start();instance.SetParameterByName("Service",1);
+   Assert.AreEqual(1,session.PhraseCalls);
+   Assert.AreEqual(2f,session.RequestedOwner.Gain);
+   song.Tracks[0].Volume=6;instance.RefreshAuthoredPropertiesForAudition();
+   Assert.AreEqual(3f,session.RequestedOwner.Gain);
+   Assert.AreEqual(1,session.PhraseCalls,"A gain edit must not restart the phrase.");
+   instance.SetTrackMutedForAudition(song.Tracks[0],true);
+   Assert.AreEqual(0f,session.RequestedOwner.Gain);
+   instance.SetTrackMutedForAudition(song.Tracks[0],false);
+   Assert.AreEqual(3f,session.RequestedOwner.Gain);
+  }
+  finally {instance.Stop(AudioStopMode.Immediate);instance.Release();}
+ }
+ [TestMethod]
+ [DataRow(false,false)] [DataRow(true,false)] [DataRow(false,true)] [DataRow(true,true)]
+ public void SharedOverlay_BatchedFactsChooseServiceRegardlessOfOrder(bool reverse,bool nested)
+ {
+  var song=SharedOverlaySong();var work=new AudioParameter{Name="Work",Minimum=0,Maximum=1};song.Parameters.Add(work);
+  song.Tracks[0].Overlay.VoiceGroup="lead";
+  song.Tracks.Add(new(){Name="Work phrase",Overlay=new(){Enabled=true,VoiceGroup="lead",BeatGridName="Song",BeatsPerMinute=100,QuantizationBeats=1,CooldownBeats=1,
+   ActivityConditions=new(){Conditions=new(){new(){Parameter=work,Comparison=AudioParameterComparison.GreaterOrEqual,Value=1}}}},
+   Instruments=new(){AddSourceInstrument(song, instrument => instrument.TrimEnd=.6f)}});
+  var root=nested?Nested(song):song;if(nested)root.Parameters.AddRange(song.Parameters);
+  var session=new EventMusicSessionFake();session.Loaded.SetResult(true);session.Phrase.SetResult(new(26460,Task.FromResult(true)));
+  var instance=AudioSystem.GetEvent(root).CreateInstance();instance.SharedMusicSessionFactory=()=>session;
+  try
+  {
+   instance.Start();
+   var values=new Dictionary<string,float>();values.Add(reverse?"Work":"Service",1);values.Add(reverse?"Service":"Work",1);
+   instance.SetParametersByName(values);
+   Assert.AreEqual(1,session.PhraseCalls);
+   Assert.AreEqual(.5f,session.RequestedOwner.Gain,"Service gain identifies the selected role; work gain is 1.");
+   var calls=session.PhraseCalls;
+   Assert.ThrowsExactly<ArgumentOutOfRangeException>(()=>instance.SetParametersByName(new Dictionary<string,float>{{"Work",0},{"Service",100}}));
+   Assert.AreEqual(1f,session.LastParameters[work].Number,"An invalid batch must not partly apply.");
+   Assert.AreEqual(calls,session.PhraseCalls);
+  }
+  finally {instance.Stop(AudioStopMode.Immediate);instance.Release();}
+ }
+ [TestMethod] public void SharedOverlay_InvalidBatchesNeverTriggerOrChangeFacts()
+ {
+  var e=SharedOverlaySong();var work=new AudioParameter{Name="Work",Minimum=0,Maximum=1};e.Parameters.Add(work);
+  var session=new EventMusicSessionFake();session.Loaded.SetResult(true);
+  var instance=AudioSystem.GetEvent(e).CreateInstance();instance.SharedMusicSessionFactory=()=>session;
+  try
+  {
+   instance.Start();
+   foreach(var invalid in new[]{float.NaN,float.PositiveInfinity,-1f,11f,.5f})
+    Assert.ThrowsExactly<ArgumentOutOfRangeException>(()=>instance.SetParametersByName(new Dictionary<string,float>{{"Work",1},{"Service",invalid}}));
+   Assert.ThrowsExactly<InvalidOperationException>(()=>instance.SetParametersByName(new Dictionary<string,float>{{"Work",1},{"Missing",1}}));
+   Assert.ThrowsExactly<ArgumentException>(()=>instance.SetParametersByName(new Dictionary<string,float>{{"Service",1},{"service",2}}));
+   Assert.ThrowsExactly<ArgumentNullException>(()=>instance.SetParametersByName(null));
+   instance.SetParametersByName(new Dictionary<string,float>());
+   Assert.AreEqual(0,session.PhraseCalls);
+   Assert.AreEqual(0f,session.LastParameters[work].Number);
+   instance.SetParametersByName(new Dictionary<string,float>{{"Work",1},{"Service",1}});
+   Assert.AreEqual(1,session.PhraseCalls,"Rejected batches must not consume the later valid trigger.");
+  }
+  finally {instance.Stop(AudioStopMode.Immediate);instance.Release();}
  }
  [TestMethod] public void SharedOverlay_BodyAllowsOneFollowingPhraseWithoutCuttingTheTail()
  {

@@ -2,10 +2,43 @@ using Smod;
 using Smod.Editor;
 public sealed partial class AudioEventTests
 {
+ [TestMethod] public void ParentControlDescriptionDoesNotRequireItsOwnSource()
+ {
+  var child=new AudioEvent();var track=new AudioTrack{Name="Dreamy drums"};child.Tracks.Add(track);
+  var node=new AudioInstrument{LayerControl=new(){ChildEvent=child,ChildTrackId=track.Id,TriggerParameter=new(){Name="InteractionCount"}}};
+  var text=AudioTimelineInspectorUx.DescribeLayerControl(node);
+  StringAssert.Contains(text,"Dreamy drums");StringAssert.Contains(text,"InteractionCount");
+  StringAssert.Contains(text,"needs no source of its own");
+  Assert.IsFalse(text.Contains("Missing Audio Source"));
+  node.LayerControl.Mode=AudioMusicControlMode.TriggerPhraseBank;
+  StringAssert.Contains(AudioTimelineInspectorUx.DescribeLayerControl(node),"Trigger complete phrases");
+  Assert.IsNull(AudioTimelineInspectorUx.DescribeLayerControl(new AudioInstrument()));
+ }
+
+ [TestMethod] public void LiveAudition_SourceGainAndPitchChangeWithoutRestartingVoice()
+ {
+  var graph=CreateEvent();var source=graph.Sources.Single();
+  var instance=AudioSystem.GetEvent(graph).CreateInstance();instance.Start();
+  try
+  {
+   var voice=_backend.Voices.Single();voice.Time=.2f;
+   source.Volume=new(.25f);source.Pitch=new(.8f);
+   instance.RefreshAuthoredPropertiesForAudition();
+   Assert.AreEqual(.25f,voice.Volume,.00001f);
+   Assert.AreEqual(.8f,voice.Pitch,.00001f);
+   Assert.AreEqual(.2f,voice.Time,.00001f);
+   Assert.AreSame(voice,_backend.Voices.Single());
+   source.Volume=new(1f);source.Pitch=new(1f);
+   instance.RefreshAuthoredPropertiesForAudition();
+   Assert.AreEqual(1f,voice.Volume,.00001f);
+   Assert.AreEqual(1f,voice.Pitch,.00001f);
+  }
+  finally{instance.Stop(AudioStopMode.Immediate);instance.Release();}
+ }
  [TestMethod] public void LiveAudition_MuteSoloClearAndDetachAffectOnlyTheSelectedInstance()
  {
   var e=CreateEvent();var a=e.MasterTrack;e.MasterTrack=new(){Name="Master"};a.Name="A";
-  var b=CreateEvent().MasterTrack;b.Name="B";e.Tracks.Add(a);e.Tracks.Add(b);
+  var bEvent=CreateEvent();var b=bEvent.MasterTrack;b.Name="B";e.Sources.AddRange(bEvent.Sources);e.Tracks.Add(a);e.Tracks.Add(b);
   var selected=AudioSystem.GetEvent(e).CreateInstance();var other=AudioSystem.GetEvent(e).CreateInstance();
   selected.Start();other.Start();var voices=_backend.Voices.ToArray();
   try

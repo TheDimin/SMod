@@ -19,7 +19,7 @@ public sealed class AudioMusicSection
 }
 public sealed partial class AudioEvent
 {
- [Property, InlineEditor, System.Diagnostics.CodeAnalysis.AllowNull] public AudioMusicPlaylist MusicPlaylist { get; set; }
+ [Property, InlineEditor] public AudioMusicPlaylist MusicPlaylist { get; set; }
 }
 
 /// <summary>Per-instance choices. Authored event resources remain unchanged.</summary>

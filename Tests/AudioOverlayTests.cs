@@ -5,7 +5,10 @@ public sealed partial class AudioEventTests
  {
   var e=PlaylistEvent();
   var count=new AudioParameter{Name="ServiceCount",Minimum=0,Maximum=100};e.Parameters.Add(count);
-  e.Tracks.Add(new(){Name="Phrases",Overlay=new(){Enabled=true,TriggerParameter=count,BeatsPerMinute=120,CooldownBeats=4},Instruments=new(){new(){Sound=CreateSoundEvent(),TrimStart=1,TrimEnd=2},new(){Sound=CreateSoundEvent(),TrimStart=3,TrimEnd=4}}});
+  var phrases=new AudioTrack{Name="Phrases",Overlay=new(){Enabled=true,TriggerParameter=count,BeatsPerMinute=120,CooldownBeats=4}};
+  phrases.Instruments.Add(AddSourceInstrument(e, instrument => { instrument.TrimStart=1;instrument.TrimEnd=2; }));
+  phrases.Instruments.Add(AddSourceInstrument(e, instrument => { instrument.TrimStart=3;instrument.TrimEnd=4; }));
+  e.Tracks.Add(phrases);
   return e;
  }
  [TestMethod] public void Overlay_StartsOnNextBarWithoutRestartingBacking()
@@ -62,13 +65,18 @@ public sealed partial class AudioEventTests
  }
  [TestMethod] public void Overlay_DisabledInlineRulePreservesTimelinePlayback()
  {
-  var e=CreateEvent();e.MasterTrack.Overlay=new();e.Tracks.Add(new(){Name="Ordinary",Overlay=new(),Instruments=new(){new(){Sound=CreateSoundEvent()}}});
+  var e=CreateEvent();e.MasterTrack.Overlay=new();
+  var ordinary=new AudioTrack{Name="Ordinary",Overlay=new()};
+  ordinary.Instruments.Add(AddSourceInstrument(e));
+  e.Tracks.Add(ordinary);
   var i=AudioSystem.GetEvent(e).CreateInstance();i.Start();Assert.AreEqual(2,_backend.Voices.Count);
  }
  [TestMethod] public void Overlay_DrumGroupStartsOnBeatBesideSoloAndIgnoresRepeatedActions()
  {
   var e=OverlayEvent();var count=new AudioParameter{Name="Interactions",Minimum=0,Maximum=100};e.Parameters.Add(count);
-  e.Tracks.Add(new(){Name="Drums",Overlay=new(){Enabled=true,TriggerParameter=count,VoiceGroup="drums",QuantizationBeats=1,BeatsPerMinute=120,CooldownBeats=4,QueueWhilePlaying=false,IgnoreTriggersDuringCooldown=true,ActivityConditions=new()},Instruments=new(){new(){Sound=CreateSoundEvent(),TrimStart=1,TrimEnd=2}}});
+  var drums=new AudioTrack{Name="Drums",Overlay=new(){Enabled=true,TriggerParameter=count,VoiceGroup="drums",QuantizationBeats=1,BeatsPerMinute=120,CooldownBeats=4,QueueWhilePlaying=false,IgnoreTriggersDuringCooldown=true,ActivityConditions=new()}};
+  drums.Instruments.Add(AddSourceInstrument(e, instrument => { instrument.TrimStart=1;instrument.TrimEnd=2; }));
+  e.Tracks.Add(drums);
   var i=AudioSystem.GetEvent(e).CreateInstance();i.Start();i.SetParameterByName("ServiceCount",1);
   _timeline.Advance(2);_=i.TimelinePosition;Assert.AreEqual(2,_backend.Voices.Count);
   i.SetParameterByName("Interactions",1);_timeline.Advance(.5f);_=i.TimelinePosition;Assert.AreEqual(3,_backend.Voices.Count);
@@ -90,8 +98,12 @@ public sealed partial class AudioEventTests
   var e=OverlayEvent();var work=new AudioParameter{Name="ActiveWork",Minimum=0,Maximum=64};e.Parameters.Add(work);
   var actions=new AudioParameter{Name="Actions",Minimum=0,Maximum=100};e.Parameters.Add(actions);
   var activity=new ParameterConditionSet{Conditions=new(){new(){Parameter=work,Comparison=AudioParameterComparison.GreaterOrEqual,Value=1}}};
-  e.Tracks.Add(new(){Name="Work rhythm",Overlay=new(){Enabled=true,VoiceGroup="drums",QuantizationBeats=1,BeatsPerMinute=120,CooldownBeats=4,QueueWhilePlaying=false,ActivityConditions=activity},Instruments=new(){new(){Sound=CreateSoundEvent(),TrimStart=1,TrimEnd=1.55f}}});
-  e.Tracks.Add(new(){Name="Action rhythm",Overlay=new(){Enabled=true,VoiceGroup="drums",QuantizationBeats=1,BeatsPerMinute=120,CooldownBeats=4,QueueWhilePlaying=false,IgnoreTriggersDuringCooldown=true,TriggerParameter=actions},Instruments=new(){new(){Sound=CreateSoundEvent(),TrimStart=2,TrimEnd=2.55f}}});
+  var workTrack=new AudioTrack{Name="Work rhythm",Overlay=new(){Enabled=true,VoiceGroup="drums",QuantizationBeats=1,BeatsPerMinute=120,CooldownBeats=4,QueueWhilePlaying=false,ActivityConditions=activity}};
+  workTrack.Instruments.Add(AddSourceInstrument(e, instrument => { instrument.TrimStart=1;instrument.TrimEnd=1.55f; }));
+  e.Tracks.Add(workTrack);
+  var actionTrack=new AudioTrack{Name="Action rhythm",Overlay=new(){Enabled=true,VoiceGroup="drums",QuantizationBeats=1,BeatsPerMinute=120,CooldownBeats=4,QueueWhilePlaying=false,IgnoreTriggersDuringCooldown=true,TriggerParameter=actions}};
+  actionTrack.Instruments.Add(AddSourceInstrument(e, instrument => { instrument.TrimStart=2;instrument.TrimEnd=2.55f; }));
+  e.Tracks.Add(actionTrack);
   var instance=AudioSystem.GetEvent(e).CreateInstance();instance.Start();
   _timeline.Advance(.1f);instance.SetParameterByName("ActiveWork",1);
   _timeline.Advance(.4f);_=instance.PlaybackState;

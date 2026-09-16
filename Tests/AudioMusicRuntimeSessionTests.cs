@@ -54,6 +54,7 @@ public sealed partial class AudioEventTests
   public AudioMusicPcmProcessor Processor;
   public float Volume {get;set;}
   public int Starts,Disposals;
+  public bool IsStopped {get;set;}
   public readonly System.Threading.Tasks.TaskCompletionSource<bool> FadeCompletion=new();
   public int FadeFrames;
   public System.Threading.Tasks.Task<bool> FadeOutAsync(int frames){FadeFrames=frames;return FadeCompletion.Task;}

@@ -27,7 +27,8 @@ internal sealed class AudioMusicPcmProcessor : Sandbox.Audio.AudioProcessor<Audi
 		if ( maximumBlockFrames < 1 || maximumBlockFrames > 8192 ) throw new ArgumentOutOfRangeException( nameof( maximumBlockFrames ) );
 		this.renderer = renderer; this.commands = commands; block = new float[maximumBlockFrames * 2];
 	}
-	public bool UnsupportedListener { get; private set; }
+	internal void LimitPlaybackTo(long sample)=>renderer.LimitPlaybackTo(sample);
+ public bool UnsupportedListener { get; private set; }
 	public bool InvalidChannelSequence { get; private set; }
 	protected override void ProcessSingleChannel( Sandbox.Audio.AudioChannel channel, Span<float> input )
 	{

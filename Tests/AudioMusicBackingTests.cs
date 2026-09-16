@@ -1,6 +1,39 @@
 using Smod;
 public sealed partial class AudioEventTests
 {
+ [TestMethod] public void SharedMusic_QuarterBeatEntryHasABoundedPreparedWait()
+ {
+  var grid=new AudioBeatGrid{End=new(24),BeatsPerMinute=100};
+  for(long action=0;action<44100;action+=73)
+  {
+   var next=AudioMusicPhraseGrid.Next(grid,action+AudioMusicPcmSession.DefaultLeadSamples,.25,100);
+   Assert.IsTrue(next.HasValue);
+   Assert.IsTrue(next.Value-action<=9262,"Prepared admission must be within 60 ms plus a quarter beat.");
+   Assert.AreEqual(0,next.Value%6615);
+  }
+  Assert.ThrowsExactly<ArgumentOutOfRangeException>(()=>AudioMusicPhraseGrid.Next(grid,0,double.NaN,100));
+ }
+ [TestMethod] public void MusicGain_BoostsBackingAndQueuedPhraseWithoutClamping()
+ {
+  var backing=new AudioMusicPcmBacking(new short[]{4096,-4096},2);
+  var renderer=new AudioMusicPcmRenderer(1,backing:backing);
+  var commands=new AudioMusicPcmCommands();
+  var owner=new AudioMusicRequestOwner {Gain=2};
+  var request=commands.TryQueue(owner,new short[]{2048,2048},0,2);
+  commands.Drain(renderer);
+  var output=new float[2];renderer.Render(output);
+  Assert.IsTrue(request.Admission.Result);
+  Assert.AreEqual(.5f,output[0]);Assert.AreEqual(0f,output[1]);
+  backing.SetGains(new float[]{3});renderer.Render(new float[2000]);
+  output=new float[2];renderer.Render(output);
+  Assert.AreEqual(.375f,output[0]);Assert.AreEqual(-.375f,output[1]);
+  foreach(var invalid in new[]{-1f,float.NaN,float.PositiveInfinity,float.NegativeInfinity})
+  {
+   Assert.ThrowsExactly<ArgumentOutOfRangeException>(()=>backing.SetGains(new[]{invalid}));
+   Assert.ThrowsExactly<ArgumentOutOfRangeException>(()=>owner.Gain=invalid);
+   Assert.ThrowsExactly<ArgumentOutOfRangeException>(()=>commands.TryQueue(owner,new short[2],0,invalid));
+  }
+ }
  [TestMethod] public void MusicBacking_StemMixKeepsPhaseAcrossMutePauseAndLoopWrap()
  {
   var backing=new AudioMusicPcmBacking(new AudioMusicPcmBacking.Stem[]{

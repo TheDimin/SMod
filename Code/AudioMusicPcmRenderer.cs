@@ -26,12 +26,19 @@ internal sealed class AudioMusicPcmRenderer
 		voices = new Voice[capacity]; releaseFrames = cancellationReleaseFrames; this.backing = backing;
 		for ( var i = 0; i < capacity; i++ ) voices[i] = new Voice();
 	}
-	public long Position { get; private set; }
+	private long endSample=long.MaxValue;
+ internal void LimitPlaybackTo(long sample)
+ {
+  if(sample<1)throw new ArgumentOutOfRangeException(nameof(sample));
+  System.Threading.Interlocked.Exchange(ref endSample,sample);
+ }
+ public long Position { get; private set; }
 	/// <summary>Render-thread seek. Discard phrases from the previous timeline; backing uses the new common sample.</summary>
 	public void Seek(long sample)
 	{
 		if(sample<0 || sample>long.MaxValue-8192)throw new ArgumentOutOfRangeException(nameof(sample));
 		for(var i=0;i<voices.Length;i++)if(voices[i].Active)Remove(i);
+		backing?.ResetEffects();
 		Position=sample;
 	}
 	/// <summary>Render-thread fade boundary: keep sounding phrases, remove those that have not started.</summary>
@@ -46,8 +53,8 @@ internal sealed class AudioMusicPcmRenderer
 	{
 		ArgumentNullException.ThrowIfNull( owner ); ArgumentNullException.ThrowIfNull( stereoPcm );
 		if ( stereoPcm.Length == 0 || stereoPcm.Length % 2 != 0 ) throw new ArgumentException( "Expected nonempty interleaved stereo PCM.", nameof( stereoPcm ) );
-		if ( !float.IsFinite( gain ) || gain < 0 || gain > 1 ) throw new ArgumentOutOfRangeException( nameof( gain ) );
-		if ( startSample < Position || startSample > long.MaxValue - stereoPcm.Length / 2 || owner.IsCancelled ) return false;
+		if ( !float.IsFinite( gain ) || gain < 0 ) throw new ArgumentOutOfRangeException( nameof( gain ) );
+		if ( startSample >= System.Threading.Interlocked.Read(ref endSample) || startSample < Position || startSample > long.MaxValue - stereoPcm.Length / 2 || owner.IsCancelled ) return false;
 		for ( var i = 0; i < voices.Length; i++ )
 		{
 			if ( voices[i].Active ) continue;
@@ -60,7 +67,10 @@ internal sealed class AudioMusicPcmRenderer
 	{
 		if ( stereoOutput.Length % 2 != 0 ) throw new ArgumentException( "Expected an interleaved stereo output block.", nameof( stereoOutput ) );
 		if ( Paused ) return;
-		var frames = stereoOutput.Length / 2;
+		var requestedFrames=stereoOutput.Length/2;
+        var limit=System.Threading.Interlocked.Read(ref endSample);
+        var frames=(int)Math.Min(requestedFrames,Math.Max(0,limit-Position));
+        stereoOutput=stereoOutput[..(frames*2)];
 		if ( Position > long.MaxValue - frames ) throw new InvalidOperationException( "Music sample clock overflow." );
 		backing?.Render(stereoOutput, Position);
 		for ( var slot = 0; slot < voices.Length; slot++ )
@@ -88,7 +98,8 @@ internal sealed class AudioMusicPcmRenderer
 			}
 			if ( Position + frames >= voice.Start + voice.Pcm.Length / 2 || voice.ReleaseRemaining == 0 ) Remove( slot );
 		}
-		Position += frames;
+		Position += requestedFrames;
+        if(Position>=limit)for(var i=0;i<voices.Length;i++)if(voices[i].Active)Remove(i);
 	}
 	void Remove( int slot ) { var voice = voices[slot]; voice.Active = false; voice.Pcm = null; voice.Owner = null; ActiveCount--; }
 }

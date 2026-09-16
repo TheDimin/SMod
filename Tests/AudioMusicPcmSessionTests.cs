@@ -1,6 +1,34 @@
 using Smod;
 public sealed partial class AudioEventTests
 {
+ [TestMethod]
+ public void MusicSession_ShortActionMarginUsesFinerGridWithoutChangingDefault()
+ {
+  var session=new AudioMusicPcmSession(new AudioBeatGrid{End=new(8),BeatsPerMinute=100});
+  try
+  {
+   var shortAction=session.TrySchedule(new AudioMusicRequestOwner(),new short[]{1,1},.125,1,schedulingLeadSamples:1058);
+   Assert.AreEqual(3308L,shortAction.Sample,"An eighth of a beat at 100 BPM is 75 ms, rounded from the grid origin.");
+   Assert.ThrowsExactly<ArgumentOutOfRangeException>(()=>session.TrySchedule(new AudioMusicRequestOwner(),new short[]{1,1},.125,1,schedulingLeadSamples:1));
+   var ordinary=session.TrySchedule(new AudioMusicRequestOwner(),new short[]{1,1},.25,1);
+   Assert.AreEqual(6615L,ordinary.Sample);
+  }
+  finally{session.CloseRequests();}
+ }
+ [TestMethod]
+ public void MusicSession_ExactChainJoinCannotStartEarlyOrMoveLate()
+ {
+  var session=new AudioMusicPcmSession(new AudioBeatGrid{End=new(8),BeatsPerMinute=100});
+  try
+  {
+   var joined=session.TrySchedule(new AudioMusicRequestOwner(),new short[]{1,1},1,1,latestSample:52920,earliestSample:52920);
+   Assert.AreEqual(52920L,joined.Sample);
+   Assert.IsNull(session.TrySchedule(new AudioMusicRequestOwner(),new short[]{1,1},1,1,latestSample:52921,earliestSample:52921),"An invalid exact join cannot move to the next beat.");
+   for(var i=0;i<110;i++){session.Processor.MixChannel(0,new float[512]);session.Processor.MixChannel(1,new float[512]);}
+   Assert.IsNull(session.TrySchedule(new AudioMusicRequestOwner(),new short[]{1,1},1,1,latestSample:52920,earliestSample:52920),"Late preparation must not start a delayed continuation.");
+  }
+  finally{session.CloseRequests();}
+ }
 	[TestMethod] public void MusicSession_TwoProcessesChooseSameBeatAndRetainIndependentCancellation()
 	{
 		var grid=new AudioBeatGrid{End=new(8),BeatsPerMinute=100};var session=new AudioMusicPcmSession(grid);

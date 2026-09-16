@@ -27,7 +27,7 @@ internal readonly record struct AudioInstrumentVisualState(
 }
 
 /// <summary>
-/// Paints single and multi-instruments. A SoundEventResource with multiple tracks is
+/// Paints single and multi-instruments. An AudioSourceDefinition with multiple tracks is
 /// presented as stacked variation lanes, matching FMOD's multi-instrument language.
 /// </summary>
 internal static class AudioInstrumentBlockRenderer
@@ -41,7 +41,8 @@ internal static class AudioInstrumentBlockRenderer
 		AudioInstrument instrument,
 		AudioInstrumentWaveformPreview preview,
 		AudioInstrumentVisualState state,
-		bool audible )
+		bool audible,
+		double beatsPerMinute = 120d )
 	{
 		var activeColor = state.IsPaused ? Theme.Yellow : Theme.Green;
 		var isActive = state.IsPlaying || state.IsPaused;
@@ -67,6 +68,13 @@ internal static class AudioInstrumentBlockRenderer
 			Paint.SetDefaultFont( 8f );
 			Paint.DrawText( new Rect( 7f, 21f, MathF.Max( 8f, rect.Width - 14f ), 16f ), $"{(instrument.RotateSubEventsAtEnd ? "PARENT LOOP" : "SUB-GRAPH")} | {instrument.SubEvents.Count} choices | {instrument.SubEventSelection}", TextFlag.LeftCenter | TextFlag.SingleLine );
 		}
+		else if ( instrument.LayerControl is {} control )
+        {
+            Paint.SetPen(Theme.TextLight);Paint.SetDefaultFont(8f);
+            Paint.DrawText(new Rect(7f,21f,MathF.Max(8f,rect.Width-14f),16f),
+                control.Mode==AudioMusicControlMode.SustainLayer ? "PARENT CONTROL | continuous source" : "PARENT CONTROL | complete phrases",TextFlag.LeftCenter | TextFlag.SingleLine);
+        }
+        else if ( instrument.CompoundHits is { Count: > 0 } ) DrawCompoundHits( rect, instrument, beatsPerMinute, audible );
 		else DrawVariationLanes( rect, clipRect, instrument, preview, state, audible );
 	}
 
@@ -77,7 +85,8 @@ internal static class AudioInstrumentBlockRenderer
 		AudioInstrumentVisualState state,
 		bool audible,
 		bool hovered,
-		bool selected )
+		bool selected,
+		double beatsPerMinute = 120d )
 	{
 		if ( hovered || selected )
 		{
@@ -89,8 +98,37 @@ internal static class AudioInstrumentBlockRenderer
 			Paint.DrawLine( new Vector2( rect.Width - 2f, 3f ), new Vector2( rect.Width - 2f, rect.Height - 3f ) );
 		}
 
-		DrawFadeEnvelope( rect, instrument, preview, audible, hovered || selected );
+		if(instrument.LayerControl is not null)return;
+        DrawFadeEnvelope( rect, instrument, preview, audible, hovered || selected, beatsPerMinute );
+		if ( instrument.CompoundHits is { Count: > 0 } )
+		{
+			if ( state.IsPlaying || state.IsPaused )
+			{
+				var x = rect.Width * (state.PlaybackPosition / AudioTimelineView.EstimateDuration( instrument, beatsPerMinute )).Clamp( 0f, 1f );
+				Paint.SetPen( Color.White.WithAlpha( audible ? .82f : .24f ), 1f );
+				Paint.DrawLine( new Vector2( x, HeaderHeight + 3f ), new Vector2( x, rect.Bottom - 3f ) );
+			}
+			return;
+		}
 		if ( !instrument.IsSubEvent ) DrawPlaybackPosition( rect, instrument, preview, state, audible );
+	}
+
+	private static void DrawCompoundHits( Rect rect, AudioInstrument instrument, double beatsPerMinute, bool audible )
+	{
+		var duration = AudioTimelineView.EstimateDuration( instrument, beatsPerMinute );
+		var hits = instrument.CompoundHits;
+		var height = MathF.Max( 1f, (rect.Height - HeaderHeight - 6f) / hits.Count );
+		for ( var index = 0; index < hits.Count; index++ )
+		{
+			var hit = hits[index];
+			if ( hit is null || !hit.IsValid ) continue;
+			var start = (float)(hit.BeatOffset * 60d / Math.Max( 20d, beatsPerMinute ));
+			var x = start / duration * rect.Width;
+			var width = MathF.Max( 1f, hit.Length / duration * rect.Width );
+			Paint.ClearPen();
+			Paint.SetBrush( Theme.Green.WithAlpha( (audible ? .65f : .15f) * hit.Gain ) );
+			Paint.DrawRect( new Rect( x, HeaderHeight + 3f + index * height, width, MathF.Max( 1f, height - 1f ) ), 1f );
+		}
 	}
 
 	private static void DrawFadeEnvelope(
@@ -98,13 +136,13 @@ internal static class AudioInstrumentBlockRenderer
 		AudioInstrument instrument,
 		AudioInstrumentWaveformPreview preview,
 		bool audible,
-		bool showHandles )
+		bool showHandles, double beatsPerMinute )
 	{
 		var duration = preview.Variations
 			.Select( variation => TrimmedDuration( instrument, variation.Duration ) )
 			.DefaultIfEmpty( 0.01f )
 			.Max();
-		if ( instrument.IsSubEvent ) duration = AudioTimelineView.EstimateDuration( instrument );
+		if ( instrument.IsSubEvent || instrument.CompoundHits is { Count: > 0 } ) duration = AudioTimelineView.EstimateDuration( instrument, beatsPerMinute );
 		var fadeInX = (instrument.FadeInDuration / duration * rect.Width).Clamp( 0f, rect.Width );
 		var fadeOutX = rect.Width - (instrument.FadeOutDuration / duration * rect.Width).Clamp( 0f, rect.Width );
 		if ( instrument.FadeInDuration > 0f )

@@ -13,7 +13,7 @@ internal static class AudioMusicalHandoff
    var seconds=role switch {AudioTransitionRole.Rhythm=>.02f,AudioTransitionRole.Lead=>entrySeconds*2,_=>entrySeconds};
    // Backing enters promptly, then settles to its requested intensity gain.
    var t=Math.Clamp(position/seconds,0,1);
-   gain=role==AudioTransitionRole.Backing ? Math.Min(1,position/.02f)*(.4f+.6f*Smooth(t)) : Smooth(t);
+   gain=role==AudioTransitionRole.Backing ? Math.Clamp(position/.02f,0,1)*(.4f+.6f*Smooth(t)) : Smooth(t);
   }
   if(exitSeconds>0)
   {
@@ -28,7 +28,8 @@ internal static class AudioMusicalHandoff
 public sealed partial class AudioEventInstance
 {
  private float handoffEntrySeconds;
+ private float handoffEntryStart;
  private float handoffExitEnd;
  private float handoffExitSeconds;
- private float HandoffGain(AudioTrack track)=>AudioMusicalHandoff.Gain(track.TransitionRole,CurrentTimelinePosition,handoffEntrySeconds,handoffExitEnd,handoffExitSeconds);
+ private float HandoffGain(AudioTrack track)=>AudioMusicalHandoff.Gain(track.TransitionRole,CurrentTimelinePosition-handoffEntryStart,handoffEntrySeconds,handoffExitEnd-handoffEntryStart,handoffExitSeconds);
 }

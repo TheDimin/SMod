@@ -28,8 +28,8 @@ public sealed partial class AudioEventTests
     public void Playback_PreparesAllConcurrentVoicesBeforeStartingAnyStem()
     {
         var e=CreateEvent();
-        e.MasterTrack.Instruments.Add(new AudioInstrument {Sound=CreateSoundEvent()});
-        e.MasterTrack.Instruments.Add(new AudioInstrument {Sound=CreateSoundEvent()});
+        e.MasterTrack.Instruments.Add( AddInstrument( e, CreateSoundEvent() ) );
+        e.MasterTrack.Instruments.Add( AddInstrument( e, CreateSoundEvent() ) );
         var heardEarly=false;
         _backend.BeforePlay=()=>heardEarly |= _backend.Voices.Any(v=>v.IsPlaying && !v.Paused);
         var instance=AudioSystem.GetEvent(e).CreateInstance();instance.Start();
@@ -67,13 +67,13 @@ public sealed partial class AudioEventTests
 		foreach ( var propertyName in movedProperties )
 		{
 			Assert.IsNotNull( typeof( AudioEvent ).GetProperty( propertyName ), propertyName );
-			Assert.IsNull( typeof( SoundEventResource ).GetProperty( propertyName ), propertyName );
+			Assert.IsNull( typeof( AudioSourceDefinition ).GetProperty( propertyName ), propertyName );
 		}
 
-		Assert.IsNotNull( typeof( SoundEventResource ).GetProperty( nameof( SoundEventResource.Volume ) ) );
-		Assert.IsNotNull( typeof( SoundEventResource ).GetProperty( nameof( SoundEventResource.Pitch ) ) );
-		Assert.IsNotNull( typeof( SoundEventResource ).GetProperty( nameof( SoundEventResource.SelectionMode ) ) );
-		Assert.IsNotNull( typeof( SoundEventResource ).GetProperty( nameof( SoundEventResource.Tracks ) ) );
+		Assert.IsNotNull( typeof( AudioSourceDefinition ).GetProperty( nameof( AudioSourceDefinition.Volume ) ) );
+		Assert.IsNotNull( typeof( AudioSourceDefinition ).GetProperty( nameof( AudioSourceDefinition.Pitch ) ) );
+		Assert.IsNotNull( typeof( AudioSourceDefinition ).GetProperty( nameof( AudioSourceDefinition.SelectionMode ) ) );
+		Assert.IsNotNull( typeof( AudioSourceDefinition ).GetProperty( nameof( AudioSourceDefinition.Tracks ) ) );
 	}
 
 	[TestMethod]
@@ -188,15 +188,15 @@ public sealed partial class AudioEventTests
 	}
 
 	[TestMethod]
-	public void Validation_RejectsInstrumentWithoutSoundEvent()
+	public void Validation_RejectsInstrumentWithoutSourceId()
 	{
 		var audioEvent = CreateEvent();
-		audioEvent.MasterTrack.Instruments[0].Sound = null;
+		audioEvent.MasterTrack.Instruments[0].SourceId = Guid.Empty;
 
 		var result = AudioEventValidator.Validate( audioEvent );
 
 		Assert.IsFalse( result.IsValid );
-		Assert.IsTrue( result.Issues.Any( issue => issue.Path.EndsWith( "/Sound" ) ) );
+		Assert.IsTrue( result.Issues.Any( issue => issue.Path.EndsWith( "/SourceId" ) ) );
 	}
 
 	[TestMethod]
@@ -256,6 +256,7 @@ public sealed partial class AudioEventTests
 		};
 		audioEvent.Parameters.Add( intensityParameter );
 		audioEvent.MasterTrack.Volume = 0.5f;
+		audioEvent.Sources.Add( secondSound );
 		audioEvent.Tracks.Add( new AudioTrack
 		{
 			Name = "Second",
@@ -264,7 +265,7 @@ public sealed partial class AudioEventTests
 			{
 				new AudioInstrument
 				{
-					Sound = secondSound,
+					SourceId = secondSound.Id,
 					Automations = new()
 					{
 						new AudioAutomation
@@ -333,9 +334,10 @@ public sealed partial class AudioEventTests
 		{
 			Name = "Conditioned",
 			Conditions = new() { new AudioParameterCondition { Parameter = action, Label = "fall" } },
-			Instruments = new() { new AudioInstrument { Sound = conditionedSound } }
+			Instruments = new() { new AudioInstrument { SourceId = conditionedSound.Id } }
 		};
 		audioEvent.Parameters.Add( action );
+		audioEvent.Sources.Add( conditionedSound );
 		audioEvent.Tracks.Add( conditionedTrack );
 		var instance = AudioSystem.GetEvent( audioEvent ).CreateInstance();
 
@@ -538,6 +540,7 @@ public sealed partial class AudioEventTests
 			Maximum = 1f
 		};
 		audioEvent.Parameters.Add( intensityParameter );
+		var auditionSource = CreateSoundEvent();
 		var auditionTrack = new AudioTrack
 		{
 			Name = "Audition",
@@ -555,8 +558,9 @@ public sealed partial class AudioEventTests
 					}
 				}
 			},
-			Instruments = new() { new AudioInstrument { Sound = CreateSoundEvent() } }
+			Instruments = new() { new AudioInstrument { SourceId = auditionSource.Id } }
 		};
+		audioEvent.Sources.Add( auditionSource );
 		audioEvent.Tracks.Add( auditionTrack );
 		var instance = AudioSystem.GetEvent( audioEvent ).CreateInstance();
 		instance.Start();
@@ -826,8 +830,11 @@ public sealed partial class AudioEventTests
 			Labels = new() { "fist", "sword" },
 			DefaultLabel = "fist"
 		};
+		var fistSource = CreateSoundEvent();
+		var swordSource = CreateSoundEvent();
 		var audioEvent = new AudioEvent
 		{
+			Sources = new() { fistSource, swordSource },
 			Parameters = new() { weaponKind },
 			Tracks = new()
 			{
@@ -835,13 +842,13 @@ public sealed partial class AudioEventTests
 				{
 					Name = "Fist",
 					Conditions = new() { new AudioParameterCondition { Parameter = weaponKind, Label = "fist" } },
-					Instruments = new() { new AudioInstrument { Sound = CreateSoundEvent() } }
+					Instruments = new() { new AudioInstrument { SourceId = fistSource.Id } }
 				},
 				new AudioTrack
 				{
 					Name = "Sword",
 					Conditions = new() { new AudioParameterCondition { Parameter = weaponKind, Label = "sword" } },
-					Instruments = new() { new AudioInstrument { Sound = CreateSoundEvent() } }
+					Instruments = new() { new AudioInstrument { SourceId = swordSource.Id } }
 				}
 			}
 		};
@@ -918,7 +925,7 @@ public sealed partial class AudioEventTests
 	{
 		var first = CreateSoundEvent().Tracks[0].Sound;
 		var second = CreateSoundEvent().Tracks[0].Sound;
-		var sound = new SoundEventResource
+		var sound = new AudioSourceDefinition
 		{
 			SelectionMode = SoundTrackSelectionMode.RandomExclusive,
 			Tracks = new()
@@ -949,7 +956,7 @@ public sealed partial class AudioEventTests
 		var hit = CreateSoundEvent().Tracks[0].Sound;
 		var fall = CreateSoundEvent().Tracks[0].Sound;
 		audioEvent.Parameters.Add( action );
-		audioEvent.MasterTrack.Instruments[0].Sound.Tracks = new()
+			SourceOf( audioEvent, audioEvent.MasterTrack.Instruments[0] ).Tracks = new()
 		{
 			new SoundEventTrack
 			{
@@ -980,7 +987,7 @@ public sealed partial class AudioEventTests
 	public void SoundTrackOffsetAndLength_ControlTheSelectedClip()
 	{
 		var audioEvent = CreateEvent();
-		var soundTrack = audioEvent.MasterTrack.Instruments[0].Sound.Tracks[0];
+		var soundTrack = SourceOf( audioEvent, audioEvent.MasterTrack.Instruments[0] ).Tracks[0];
 		soundTrack.Offset = 1.25f;
 		soundTrack.Length = 0.75f;
 		var instance = AudioSystem.GetEvent( audioEvent ).CreateInstance();
@@ -997,8 +1004,8 @@ public sealed partial class AudioEventTests
 	{
 		var audioEvent = CreateEvent();
 		var instrument = audioEvent.MasterTrack.Instruments[0];
-		instrument.Sound.Tracks[0].Offset = 1.25f;
-		instrument.Sound.Tracks[0].Length = 0.75f;
+		SourceOf( audioEvent, instrument ).Tracks[0].Offset = 1.25f;
+		SourceOf( audioEvent, instrument ).Tracks[0].Length = 0.75f;
 		instrument.TrimStart = 0.25f;
 		var instance = AudioSystem.GetEvent( audioEvent ).CreateInstance();
 
@@ -1026,10 +1033,11 @@ public sealed partial class AudioEventTests
 		audioEvent.DistanceAttenuation = false;
 		audioEvent.Decibels = 83;
 		audioEvent.Distance = 4321f;
+		audioEvent.Sources.Add( secondSound );
 		audioEvent.Tracks.Add( new AudioTrack
 		{
 			Name = "Second",
-			Instruments = new() { new AudioInstrument { Sound = secondSound } }
+			Instruments = new() { new AudioInstrument { SourceId = secondSound.Id } }
 		} );
 
 		var instance = AudioSystem.GetEvent( audioEvent ).CreateInstance();
@@ -1173,7 +1181,7 @@ public sealed partial class AudioEventTests
 	{
 		var first = CreateSoundEvent().Tracks[0].Sound;
 		var second = CreateSoundEvent().Tracks[0].Sound;
-		var sound = new SoundEventResource
+		var sound = new AudioSourceDefinition
 		{
 			SelectionMode = SoundTrackSelectionMode.RandomExclusive,
 			Tracks = new()
@@ -1208,7 +1216,7 @@ public sealed partial class AudioEventTests
 	{
 		var first = CreateSoundEvent().Tracks[0].Sound;
 		var second = CreateSoundEvent().Tracks[0].Sound;
-		var sound = new SoundEventResource
+		var sound = new AudioSourceDefinition
 		{
 			SelectionMode = SoundTrackSelectionMode.RandomExclusive,
 			Tracks = new()
@@ -1241,7 +1249,7 @@ public sealed partial class AudioEventTests
 	{
 		var first = CreateSoundEvent().Tracks[0].Sound;
 		var second = CreateSoundEvent().Tracks[0].Sound;
-		var sound = new SoundEventResource
+		var sound = new AudioSourceDefinition
 		{
 			SelectionMode = SoundTrackSelectionMode.RandomExclusive,
 			Tracks = new()
@@ -1276,7 +1284,7 @@ public sealed partial class AudioEventTests
 	{
 		var first = CreateSoundEvent().Tracks[0].Sound;
 		var second = CreateSoundEvent().Tracks[0].Sound;
-		var sound = new SoundEventResource
+		var sound = new AudioSourceDefinition
 		{
 			SelectionMode = SoundTrackSelectionMode.RandomExclusive,
 			Tracks = new()
@@ -1332,10 +1340,13 @@ public sealed partial class AudioEventTests
 	[TestMethod]
 	public void ContentEndLoop_WaitsForPlayingAndPendingInRegionInstruments()
 	{
-		var firstInstrument = new AudioInstrument { Sound = CreateSoundEvent(), StartTime = 0.1f };
-		var secondInstrument = new AudioInstrument { Sound = CreateSoundEvent(), StartTime = 0.6f };
+		var firstSource = CreateSoundEvent();
+		var secondSource = CreateSoundEvent();
+		var firstInstrument = new AudioInstrument { SourceId = firstSource.Id, StartTime = 0.1f };
+		var secondInstrument = new AudioInstrument { SourceId = secondSource.Id, StartTime = 0.6f };
 		var audioEvent = new AudioEvent
 		{
+			Sources = new() { firstSource, secondSource },
 			MasterTrack = new AudioTrack
 			{
 				Name = "Master",
@@ -1376,13 +1387,16 @@ public sealed partial class AudioEventTests
 		var state = AddLabeledState( audioEvent );
 		var inside = audioEvent.MasterTrack.Instruments[0];
 		inside.StartTime = 0.5f;
+		var ineligibleSource = CreateSoundEvent();
 		var ineligible = new AudioInstrument
 		{
-			Sound = CreateSoundEvent(),
+			SourceId = ineligibleSource.Id,
 			StartTime = 0.6f,
 			Conditions = new() { new AudioParameterCondition { Parameter = state, Label = "combat" } }
 		};
-		var outside = new AudioInstrument { Sound = CreateSoundEvent(), StartTime = 3f };
+		var outsideSource = CreateSoundEvent();
+		var outside = new AudioInstrument { SourceId = outsideSource.Id, StartTime = 3f };
+		audioEvent.Sources.AddRange( [ineligibleSource, outsideSource] );
 		audioEvent.MasterTrack.Instruments.AddRange( [ineligible, outside] );
 		audioEvent.LoopRegions.Add( new LoopRegion
 		{
@@ -1395,7 +1409,7 @@ public sealed partial class AudioEventTests
 		instance.Start();
 
 		_timeline.Advance( 0.8f );
-		var insideVoice = _backend.Voices.Single( voice => ReferenceEquals( voice.Sound.Sounds.Single(), inside.Sound.Tracks[0].Sound ) );
+		var insideVoice = _backend.Voices.Single( voice => ReferenceEquals( voice.Sound.Sounds.Single(), SourceOf( audioEvent, inside ).Tracks[0].Sound ) );
 		insideVoice.IsPlaying = false;
 		_ = instance.TimelinePosition;
 
@@ -1456,7 +1470,7 @@ public sealed partial class AudioEventTests
 	{
 		var first = CreateSoundEvent().Tracks[0].Sound;
 		var second = CreateSoundEvent().Tracks[0].Sound;
-		var sound = new SoundEventResource
+		var sound = new AudioSourceDefinition
 		{
 			SelectionMode = SoundTrackSelectionMode.RandomExclusive,
 			Tracks = new()
@@ -1776,25 +1790,25 @@ public sealed partial class AudioEventTests
 		};
 	}
 
-	private static AudioEvent CreateEvent( SoundEventResource sound = null )
+	private static AudioEvent CreateEvent( AudioSourceDefinition source = null )
 	{
-		return new AudioEvent
+		source ??= CreateSoundEvent();
+		var audioEvent = new AudioEvent
 		{
+			Sources = new() { source },
 			MasterTrack = new AudioTrack
 			{
 				Name = "Master",
 				Instruments = new()
 				{
-					new AudioInstrument
-					{
-						Sound = sound ?? CreateSoundEvent()
-					}
+					new AudioInstrument { SourceId = source.Id }
 				}
 			}
 		};
+		return audioEvent;
 	}
 
-	private static AudioEvent CreateLabeledEvent( SoundEventResource hit, SoundEventResource fall )
+	private static AudioEvent CreateLabeledEvent( AudioSourceDefinition hit, AudioSourceDefinition fall )
 	{
 		var actionParameter = new AudioParameter
 		{
@@ -1805,6 +1819,7 @@ public sealed partial class AudioEventTests
 		};
 		return new AudioEvent
 		{
+			Sources = new() { hit, fall },
 			Parameters = new() { actionParameter },
 			MasterTrack = new AudioTrack
 			{
@@ -1813,12 +1828,12 @@ public sealed partial class AudioEventTests
 				{
 					new AudioInstrument
 					{
-						Sound = hit,
+						SourceId = hit.Id,
 						Conditions = new() { new AudioParameterCondition { Parameter = actionParameter, Label = "hit" } }
 					},
 					new AudioInstrument
 					{
-						Sound = fall,
+						SourceId = fall.Id,
 						Conditions = new() { new AudioParameterCondition { Parameter = actionParameter, Label = "fall" } }
 					}
 				}
@@ -1826,9 +1841,32 @@ public sealed partial class AudioEventTests
 		};
 	}
 
-	private static SoundEventResource CreateSoundEvent()
+	private static AudioInstrument AddInstrument( AudioEvent graph, AudioSourceDefinition source, Action<AudioInstrument> configure = null )
 	{
-		return new SoundEventResource
+		ArgumentNullException.ThrowIfNull( graph );
+		ArgumentNullException.ThrowIfNull( source );
+		if ( !graph.Sources.Contains( source ) )
+			graph.Sources.Add( source );
+		var instrument = new AudioInstrument { SourceId = source.Id };
+		configure?.Invoke( instrument );
+		return instrument;
+	}
+
+	private static AudioInstrument AddSourceInstrument( AudioEvent graph, Action<AudioInstrument> configure = null )
+	{
+		return AddInstrument( graph, CreateSoundEvent(), configure );
+	}
+
+	private static AudioSourceDefinition SourceOf( AudioEvent graph, AudioInstrument instrument )
+	{
+		ArgumentNullException.ThrowIfNull( graph );
+		ArgumentNullException.ThrowIfNull( instrument );
+		return graph.Sources.Single( source => source.Id == instrument.SourceId );
+	}
+
+	private static AudioSourceDefinition CreateSoundEvent()
+	{
+		return new AudioSourceDefinition
 		{
 			Tracks = new()
 			{

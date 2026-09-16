@@ -79,7 +79,7 @@ internal static class AudioMusicSourcePreparation
  }
  internal static bool FitsBudget(long residentBytes,long decodedFrames,long outputFrames,long maximumBytes,bool retainDecoded=false)
  {
-  if(residentBytes<0 || decodedFrames<1 || outputFrames<1 || maximumBytes<1 || residentBytes>maximumBytes)return false;
+  if(residentBytes<0 || decodedFrames<0 || outputFrames<1 || maximumBytes<1 || residentBytes>maximumBytes)return false;
   if(maximumBytes-residentBytes<8192)return false;
   // A retained neutral full-source result needs no second array.
   if(retainDecoded) return outputFrames<=decodedFrames && decodedFrames <= (maximumBytes-residentBytes-8192)/4;

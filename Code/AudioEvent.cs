@@ -3,6 +3,8 @@ namespace Smod;
 [AssetType( Name = "Audio Event", Extension = "audevt", Category = "Audio", Flags = AssetTypeFlags.NoEmbedding )]
 public sealed partial class AudioEvent : GameResource
 {
+ [Property, InlineEditor] public List<AudioSourceDefinition> Sources { get; set; } = new();
+ internal AudioSourceDefinition Source(AudioInstrument instrument) => AudioSourceRuntime.Resolve(this,instrument);
 	[Property, Title( "Sustain Until Stopped" ), Description( "Keep this retained process event active without playing voices. Its owner must stop it before release, including on cancellation or scene cleanup." )]
 	public bool SustainUntilStopped { get; set; }
 
@@ -72,7 +74,7 @@ public sealed partial class AudioEvent : GameResource
 	[Property, Range( 0f, 10f ), Title( "Fade Out Duration" )]
 	public float FadeOutDuration { get; set; } = 0.1f;
 
-	internal SoundEvent CreatePlaybackEvent( SoundEventResource sound, SoundEventTrack track )
+	internal SoundEvent CreatePlaybackEvent( AudioSourceDefinition sound, SoundEventTrack track )
 	{
 		ArgumentNullException.ThrowIfNull( sound );
 		ArgumentNullException.ThrowIfNull( track );
@@ -102,8 +104,8 @@ public sealed class AudioTrack
 	[Property, Hide] public Guid Id { get; set; } = Guid.NewGuid();
 
  [Property] public AudioTransitionRole TransitionRole {get;set;}
-	[Property, InlineEditor, System.Diagnostics.CodeAnalysis.AllowNull] public AudioTone Tone { get; set; }
-    [Property, InlineEditor, System.Diagnostics.CodeAnalysis.AllowNull] public AudioOverlayRule Overlay {get;set;}
+	[Property, InlineEditor] public AudioTone Tone { get; set; }
+    [Property, InlineEditor] public AudioOverlayRule Overlay {get;set;}
     [Property] public bool MusicLead { get; set; }
     [Property] public List<float> MusicVariationGains { get; set; } = new();
 	[Property, Hide, Range( 72f, 320f )]
@@ -130,11 +132,19 @@ public sealed class AudioTrack
 
 public sealed class AudioInstrument
 {
+ [Property, InlineEditor, Group("Effects"), Description("Optional echo for local, non-shared sound playback. Settings apply to new voices.")]
+ public AudioEchoEffect Echo {get;set;}
+ [Property, InlineEditor, Description("Parent control for a continuous child music track. Changes gain on complete phrases without moving or restarting its source.")]
+ public AudioMusicLayerControl LayerControl { get; set; }
 	[Property, Hide] public Guid Id { get; set; } = Guid.NewGuid();
 
 	[Property, Title( "Name" )] public string Name { get; set; }
 	[Property, InlineEditor, Title( "Sub-graph Choices" ), Description( "Use child Audio Events instead of a Sound Event. One eligible child is retained until this instrument ends or its choice becomes ineligible. Matching parent parameters are inherited while active." )]
 	public List<AudioSubEventChoice> SubEvents { get; set; } = new();
+ [Property, Description("Keep the active child source position across parent loop and phase jumps. Song selection still follows parent conditions.")]
+ public bool RetainSubEventPositionOnTimelineJump { get; set; }
+ [Property, Range(0,10), Description("Retain the outgoing child for this fade when no child choice is eligible, such as a parent receipt cue. Zero stops immediately.")]
+ public float SubEventExitFadeSeconds { get; set; }
 	[Property, Title( "Sub-graph Selection" )]
 	public SoundTrackSelectionMode SubEventSelection { get; set; } = SoundTrackSelectionMode.RandomExclusive;
 	[Property, Title( "Sub-graph Change Boundary" ), Description( "When the selected child becomes ineligible, switch on this boundary of its own beat grid. Initial playback starts immediately. A missing grid switches immediately." )]
@@ -146,13 +156,22 @@ public sealed class AudioInstrument
     [Property] public List<int> OverlayBars {get;set;} = new();
     [Property, Range(0,300), Description("Shared phrase body length in seconds. Zero reserves the full trim. A shorter body permits one following phrase while the retained source tail finishes. Trim End still includes the tail. Requires a shared-output overlay.")]
     public float OverlayBodySeconds {get;set;}
+    [Property, Description("Allow only the recorded release tail to cross this composition loop. The complete body must fit before the loop end. Requires a positive verified body duration; does not permit cross-graph commands.")]
+    public bool AllowReleaseTailAcrossLoop {get;set;}
+    [Property, Title("Compound Hits")] public List<AudioCompoundHit> CompoundHits {get;set;} = new();
 
     [Property, Range(0,64), Title("Shared Music Wait (Beats)"), Description("Maximum shared-clock wait from request to phrase entry. Zero allows any future entry. Source loading uses this same budget; paused music does not consume it.")]
     public int MaximumMusicWaitBeats {get;set;}
 
 
-	[Property, Title( "Sound Event" )]
-	public SoundEventResource Sound { get; set; }
+	[Property, InlineEditor, Title( "Start Trigger Conditions" ), Description( "Play this sound once when all conditions become true. Start Time is a delay from that trigger. A false condition rearms it; the current passage keeps its tail. Requires a non-shared parent and an explicit trim end." )]
+	public List<AudioParameterCondition> StartTriggerConditions { get; set; } = new();
+ [Property, Description("Optional delay after a start trigger, in seconds. When set, Start Time is only its authored timeline position. Null preserves the older Start Time-as-delay behavior.")]
+ public float? TriggerDelaySeconds { get; set; }
+	[Property, InlineEditor, Title( "Stop Trigger Conditions" ), Description( "Optional conditions that cancel the triggered passage without marking it completed. Use after a cancellation fade ends. A new start-condition entry rearms it." )]
+	public List<AudioParameterCondition> StopTriggerConditions { get; set; } = new();
+
+ [Property] public Guid SourceId { get; set; }
 
 	[Property, Group( "Debug" ), Order( 1000 ), Range( 0f, 300f ), Title( "Start Time" ), Description( "Timeline start time in seconds." )]
 	public float StartTime { get; set; }
@@ -180,49 +199,6 @@ public sealed class AudioInstrument
 
 	[Property, InlineEditor]
 	public List<AudioAutomation> Automations { get; set; } = new();
-}
-
-[AssetType( Name = "Sound Event", Extension = "sndevt", Category = "Audio", Flags = AssetTypeFlags.NoEmbedding )]
-public sealed class SoundEventResource : GameResource
-{
-	[Property]
-	public RangedFloat Volume { get; set; } = new( 1f );
-
-	[Property]
-	public RangedFloat Pitch { get; set; } = new( 1f );
-
-	[Property]
-	public SoundTrackSelectionMode SelectionMode { get; set; } = SoundTrackSelectionMode.Random;
-
-	[Property, InlineEditor, Title( "Tracks" )]
-	public List<SoundEventTrack> Tracks { get; set; } = new();
-
-	private SoundEventTrack _lastSelectedTrack;
-
-	internal SoundEventTrack SelectTrack( IReadOnlyList<SoundEventTrack> eligibleTracks )
-	{
-		ArgumentNullException.ThrowIfNull( eligibleTracks );
-		if ( eligibleTracks.Count == 0 )
-			throw new ArgumentException( "At least one eligible sound track is required.", nameof( eligibleTracks ) );
-
-		SoundEventTrack selected;
-		if ( SelectionMode == SoundTrackSelectionMode.Random || eligibleTracks.Count == 1 )
-		{
-			selected = eligibleTracks[Random.Shared.Next( eligibleTracks.Count )];
-		}
-		else
-		{
-			var candidates = eligibleTracks
-				.Where( track => !ReferenceEquals( track, _lastSelectedTrack ) )
-				.ToArray();
-			selected = candidates.Length > 0
-				? candidates[Random.Shared.Next( candidates.Length )]
-				: eligibleTracks[Random.Shared.Next( eligibleTracks.Count )];
-		}
-
-		_lastSelectedTrack = selected;
-		return selected;
-	}
 }
 
 public enum SoundTrackSelectionMode

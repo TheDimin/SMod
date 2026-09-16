@@ -34,6 +34,7 @@ public sealed partial class AudioEventEditorWindow
   return new { ResourcePath = _asset.RelativePath, target.Pointer, target.Kind, target.Id,
    Time = time, Focused = focus, StateRevision = stateRevision,
    Revision = AuthoringRevision(), Dirty = _dirtyResources.Contains(_event),
+   Description = target.Value is Smod.AudioInstrument instrument ? AudioTimelineView.InstrumentDescription(instrument,_event) : null,
    Element = AudioElementPath.Read(state, target.Pointer) };
  }
 }

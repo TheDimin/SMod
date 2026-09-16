@@ -62,7 +62,8 @@ public sealed partial class AudioEventTests
  [TestMethod]
  public void Music_PreparesOnlyTheActiveComposition()
  {
-  var e=PlaylistEvent();e.Tracks.Add(new(){Name="Target",Instruments=new(){new(){Sound=CreateSoundEvent(),StartTime=20,TrimEnd=8}}});
+  var e=PlaylistEvent();
+  e.Tracks.Add(new(){Name="Target",Instruments=new(){AddSourceInstrument(e, instrument => { instrument.StartTime=20;instrument.TrimEnd=8; })}});
   var i=AudioSystem.GetEvent(e).CreateInstance();i.Start();
   Assert.AreEqual(1,_backend.Voices.Count);
   i.SetParameterByName("WorldState",1);_timeline.Advance(7);_=i.TimelinePosition;_timeline.Advance(1.1f);_=i.TimelinePosition;

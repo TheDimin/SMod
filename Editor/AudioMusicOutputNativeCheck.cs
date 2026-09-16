@@ -38,14 +38,19 @@ public static partial class AudioMusicOutputNativeCheck
  }
 
  public sealed record EventResult(bool Running,int SharedParts,int VisibleParts,int PreparedRanges,long ResidentWhilePlaying,bool ActionExpected,bool ActionPlaying,bool ActionOnBeat,bool PauseHeld,bool SeekApplied,bool Faded,
-  double Peak,bool MixerRemoved,long ResidentAfterStop,string Error,bool Passed);
- public static async Task<EventResult> RunEvent(AudioEvent resource,float worldState=0)
+  double Peak,bool MixerRemoved,long ResidentAfterStop,string Error,bool Passed,double? ActionScheduledDelayMs,double? ActionObservedDelayMs,string ActionReason);
+ public static async Task<EventResult> RunEvent(AudioEvent resource,float worldState=0,bool activeCoffee=false,float actionDelaySeconds=.1f,float intensity=0,float measureSeconds=0)
  {
+  if(!float.IsFinite(actionDelaySeconds)||actionDelaySeconds<0||actionDelaySeconds>.5f)throw new ArgumentOutOfRangeException(nameof(actionDelaySeconds));
+  if(!float.IsFinite(intensity)||intensity<0||intensity>1||!float.IsFinite(measureSeconds)||measureSeconds<0||measureSeconds>10)throw new ArgumentOutOfRangeException("Use intensity 0-1 and measureSeconds 0-10.");
   var tap=new Tap();var output=new SboxMusicOutput(tap);
   var runtime=new AudioMusicRuntimeSession(output,maximumBytes:AudioMusicEventPlayback.DefaultPreparationBudgetBytes);
   var instance=AudioSystem.GetEvent(resource).CreateInstance();instance.SharedMusicSessionFactory=()=>runtime;
   if(resource.Parameters.Any(p=>p.Name=="WorldState"))instance.SetParameterByName("WorldState",worldState);
-  var values=resource.Parameters.ToDictionary(p=>p,p=>p.Type==AudioParameterType.Labeled?new AudioParameterValue(0,p.DefaultLabel,true):new AudioParameterValue(p.Name=="WorldState"?worldState:p.DefaultValue,null,false));
+  if(activeCoffee)instance.SetParameterByName("ActiveCoffeeCount",1);
+  if(resource.Parameters.Any(p=>p.Name=="Intensity"))instance.SetParameterByName("Intensity",intensity);
+  double? scheduledDelay=null,observedDelay=null;string actionReason=null;
+  var values=resource.Parameters.ToDictionary(p=>p,p=>p.Type==AudioParameterType.Labeled?new AudioParameterValue(0,p.DefaultLabel,true):new AudioParameterValue(p.Name=="WorldState"?worldState:p.Name=="Intensity"?intensity:p.DefaultValue,null,false));
   var actionTrack=resource.Tracks.FirstOrDefault(t=>t.Overlay?.Enabled==true && t.Overlay.TriggerParameter?.Name=="InteractionCount"
    && AudioTimelineControlEvaluator.Matches(t.Overlay.Conditions,values));
   bool expected=actionTrack is not null;
@@ -56,22 +61,28 @@ public static partial class AudioMusicOutputNativeCheck
    while(instance.PlaybackState==AudioPlaybackState.Starting && timeout.Elapsed.TotalSeconds<30)await Task.Delay(10);
    running=instance.PlaybackState==AudioPlaybackState.Playing;id=output.MixerId;
    if(!running)throw new InvalidOperationException(instance.SharedMusicError??"Shared event did not start within 30 seconds.");
-   await Task.Delay(100);parts=instance.InstrumentPlaybackStates.Count;visible=instance.CaptureLiveSnapshot()?.Voices.Count(v=>v.State=="Playing"||v.State=="Silent")??0;
+   await Task.Delay((int)Math.Round(actionDelaySeconds*1000));parts=instance.InstrumentPlaybackStates.Count;visible=instance.CaptureLiveSnapshot()?.Voices.Count(v=>v.State=="Playing"||v.State=="Silent")??0;
    if(expected)
    {
-    instance.SetParameterByName("InteractionCount",1);timeout.Restart();
+    var requestPosition=runtime.Position;timeout.Restart();instance.SetParameterByName("InteractionCount",1);
     while(timeout.Elapsed.TotalSeconds<3)
     {
      var states=instance.InstrumentPlaybackStates;
-     action=states.Any(v=>v.Track.Overlay?.Enabled==true && v.IsPlaying);
+     action=states.Any(v=>ReferenceEquals(v.Track,actionTrack) && v.IsPlaying);
      if(action)break;
      await Task.Delay(10);
     }
     var row=instance.CaptureLiveSnapshot()?.Voices.FirstOrDefault(v=>v.Track==actionTrack.Name && v.State is "Playing" or "Silent");
+    if(row is not null){scheduledDelay=(row.Start-requestPosition/44100d)*1000;observedDelay=timeout.Elapsed.TotalMilliseconds;actionReason=row.Reason;}
     var beats=row is null?-1:row.Start/resource.BeatGrids[0].SecondsPerBeat;
-    onBeat=beats>=0 && Math.Abs(beats-Math.Round(beats))<.0001;
+    var quantum=actionTrack.Overlay.QuantizationBeats>0?actionTrack.Overlay.QuantizationBeats:resource.BeatGrids[0].BeatsPerBar;
+    onBeat=beats>=0 && Math.Abs(beats/quantum-Math.Round(beats/quantum))<=1d/(44100*resource.BeatGrids[0].SecondsPerBeat*quantum);
+    // Include the complete short response in the in-memory level measurement.
+    timeout.Restart();
+    while(row is not null && instance.TimelinePosition<row.End && timeout.Elapsed.TotalSeconds<2)await Task.Delay(10);
    }
    parts=instance.InstrumentPlaybackStates.Count;visible=instance.CaptureLiveSnapshot()?.Voices.Count(v=>v.State=="Playing"||v.State=="Silent")??0;
+   if(measureSeconds>0)await Task.Delay((int)Math.Round(measureSeconds*1000));
    ranges=runtime.PreparedRangeCount;resident=runtime.ResidentBytes;
    instance.Paused=true;await Task.Delay(60);var paused=instance.TimelinePosition;await Task.Delay(80);held=instance.TimelinePosition==paused;
    instance.TimelinePosition=1;await Task.Delay(60);sought=Math.Abs(instance.TimelinePosition-1)<.001;
@@ -83,11 +94,11 @@ public static partial class AudioMusicOutputNativeCheck
   captured=tap.ReadAfterDetach();var peak=captured.Select(v=>Math.Abs((double)v)).DefaultIfEmpty().Max();
   var removed=id.HasValue&&!Mixer.Default.GetChildren().Any(m=>m.Id==id.Value);
   return new(running,parts,visible,ranges,resident,expected,action,onBeat,held,sought,faded,peak,removed,runtime.ResidentBytes,instance.SharedMusicError,
-   running&&parts>0&&visible>0&&visible<=parts&&(!expected||action&&onBeat)&&held&&sought&&faded&&peak>.0001&&removed&&runtime.ResidentBytes==0&&instance.SharedMusicError is null);
+   running&&parts>0&&visible>0&&visible<=parts&&(!expected||action&&onBeat)&&held&&sought&&faded&&peak>.0001&&removed&&runtime.ResidentBytes==0&&instance.SharedMusicError is null,scheduledDelay,observedDelay,actionReason);
  }
  public sealed record FadeResult(int RequestedFrames,long CapturedFadeFrames,double PeakBeforeFade,double FinalSample,
   bool MixerRemoved,long ResidentAfterStop,bool Passed);
- public static async Task<FadeResult> RunFade(AudioEvent resource,AudioBeatGrid grid)
+ public static async Task<FadeResult> RunFade(AudioEvent resource,AudioBeatGrid grid,bool stopCarrier=false)
  {
   var tap=new Tap();var output=new SboxMusicOutput(tap);
   var runtime=new AudioMusicRuntimeSession(output,maximumBytes:AudioMusicEventPlayback.DefaultPreparationBudgetBytes);
@@ -101,7 +112,9 @@ public static partial class AudioMusicOutputNativeCheck
    if(!await owner.StartAsync(grid,parameters))throw new InvalidOperationException("Shared fade source did not start.");
    id=output.MixerId;
    await Task.Delay(200);before=tap.Frames;
-   await owner.StopAsync(.5f);await Task.Delay(50);captured=tap.ReadAfterDetach();
+   var stopping=owner.StopAsync(.5f);
+   if(stopCarrier)output.StopCarrierForCheck();
+   await stopping;await Task.Delay(50);captured=tap.ReadAfterDetach();
   }
   finally {runtime.Dispose();}
   var elapsed=captured.Length/2-before;
@@ -109,7 +122,7 @@ public static partial class AudioMusicOutputNativeCheck
   var tail=captured.TakeLast(2).Select(v=>Math.Abs((double)v)).DefaultIfEmpty().Max();
   var removed=id.HasValue&&!Mixer.Default.GetChildren().Any(m=>m.Id==id.Value);
   return new(requested,elapsed,peak,tail,removed,runtime.ResidentBytes,
-   elapsed>=requested&&elapsed<=requested+8192&&peak>.0001&&tail<.000001&&removed&&runtime.ResidentBytes==0);
+   (stopCarrier?elapsed<requested:elapsed>=requested&&elapsed<=requested+8192&&tail<.000001)&&peak>.0001&&removed&&runtime.ResidentBytes==0);
  }
  public sealed record PhraseResult(long ScheduledSample,long CaptureSample,int Frames,double MaximumSampleError,double ExpectedPeak,bool SamplesMatch);
  public sealed record Result(bool Started,bool ChannelSequenceValid,bool ClockMatchesCapture,PhraseResult[] Phrases,

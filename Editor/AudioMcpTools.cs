@@ -2,6 +2,7 @@ using System;
 using System.Linq;
 using System.Threading.Tasks;
 using Smod;
+using Smod.Editor;
 
 namespace Editor.Mcp;
 
@@ -24,7 +25,7 @@ public static class AudioMcpTools
     {
         var asset=AssetSystem.FindByPath(resourcePath);
         var resource=asset?.LoadResource() as Sandbox.GameResource;
-        if(resource is not (AudioEvent or AudioParameter or SoundEventResource))throw new ArgumentException("A Smod resource is required.");
+        if(resource is not (AudioEvent or AudioParameter))throw new ArgumentException("An Audio Event or Audio Parameter resource is required.");
         resource.LoadFromJson(System.IO.File.ReadAllText(asset.AbsolutePath));
         return new {Path=asset.RelativePath,Reloaded=true};
     }
@@ -107,8 +108,8 @@ public static class AudioMcpTools
 			return new { path = resourcePath, found = false, issues = new[] { "Audio event resource could not be loaded." } };
 
 		var validation = AudioEventValidator.Validate( audioEvent );
-		var tracks = (audioEvent.MasterTrack is null ? Array.Empty<InspectedTrack>() : new[] { InspectTrack( audioEvent.MasterTrack, true ) })
-			.Concat( audioEvent.Tracks?.Where( track => track is not null ).Select( track => InspectTrack( track, false ) ) ?? Enumerable.Empty<InspectedTrack>() )
+		var tracks = (audioEvent.MasterTrack is null ? Array.Empty<InspectedTrack>() : new[] { InspectTrack( audioEvent, audioEvent.MasterTrack, true, audioEvent.BeatGrids?.FirstOrDefault()?.BeatsPerMinute ?? 120d ) })
+			.Concat( audioEvent.Tracks?.Where( track => track is not null ).Select( track => InspectTrack( audioEvent, track, false, audioEvent.BeatGrids?.FirstOrDefault()?.BeatsPerMinute ?? 120d ) ) ?? Enumerable.Empty<InspectedTrack>() )
 			.ToArray();
 
 		return new
@@ -175,6 +176,20 @@ public static class AudioMcpTools
 				endSeconds = region.End.Seconds,
 				conditionCount = region.Conditions?.Conditions?.Count ?? 0
 			} ).ToArray(),
+			sources = audioEvent.Sources?.Where( source => source is not null ).Select( source => new
+			{
+				id = source.Id,
+				volume = source.Volume,
+				pitch = source.Pitch,
+				selectionMode = source.SelectionMode.ToString(),
+				tracks = source.Tracks?.Where( track => track is not null ).Select( track => new
+				{
+					sound = track.Sound?.ResourcePath,
+						offset = track.Offset,
+						length = track.Length,
+						conditions = track.Conditions?.Count ?? 0
+					} ).ToArray() ?? Array.Empty<object>()
+			} ).ToArray() ?? Array.Empty<object>(),
 			parameters = audioEvent.Parameters?.Where( parameter => parameter is not null ).Select( parameter => new InspectedParameter(
 				parameter.ResourcePath,
 				parameter.Name,
@@ -189,15 +204,18 @@ public static class AudioMcpTools
 		};
 	}
 
-	private static InspectedTrack InspectTrack( AudioTrack track, bool isMaster )
+	private static InspectedTrack InspectTrack( AudioEvent graph, AudioTrack track, bool isMaster, double beatsPerMinute )
 	{
 		var instruments = track.Instruments?.Where( instrument => instrument is not null ).Select( instrument =>
 		{
-			var duration = EstimateDuration( instrument );
+			var source = AudioSourceAuthoring.Resolve( graph, instrument );
+			var duration = EstimateDuration( graph, instrument, beatsPerMinute );
 			return new InspectedInstrument(
-				instrument.Sound?.ResourcePath,
-				instrument.Sound?.EmbeddedResource is not null,
-				instrument.Sound?.Tracks?.Where( track => track?.Sound.IsValid() == true ).Select( track => track.Sound.ResourcePath ).ToArray() ?? Array.Empty<string>(),
+				instrument.SourceId,
+				source?.Volume.ToString(),
+				source?.Pitch.ToString(),
+				source?.SelectionMode.ToString(),
+				source?.Tracks?.Where( track => track?.Sound.IsValid() == true ).Select( track => track.Sound.ResourcePath ).ToArray() ?? Array.Empty<string>(),
 				instrument.StartTime,
 				instrument.TrimStart,
 				instrument.TrimEnd,
@@ -205,14 +223,14 @@ public static class AudioMcpTools
                 instrument.OverlayBars?.ToArray() ?? Array.Empty<int>(),
 				duration,
 				instrument.StartTime + duration,
-				instrument.IsSubEvent ? instrument.SubEvents.Count : instrument.Sound?.Tracks?.Count ?? 0,
+				instrument.IsSubEvent ? instrument.SubEvents.Count : source?.Tracks?.Count ?? 0,
 				instrument.Conditions?.Where( condition => condition is not null ).Select( condition => new InspectedCondition( condition.Parameter?.Name, condition.Parameter?.ResourcePath, condition.Invert, condition.Minimum, condition.Maximum, condition.Label ) ).ToArray() ?? Array.Empty<InspectedCondition>(),
 				instrument.Automations?.Where( automation => automation is not null ).Select( InspectAutomation ).ToArray() ?? Array.Empty<InspectedAutomation>(),
 				instrument.SubEventSelection.ToString(),
 				instrument.SubEventQuantization.ToString(),
                 instrument.RotateSubEventsAtEnd, instrument.SubEventTransitionBeats,
 				instrument.SubEvents?.Select( choice => new InspectedSubEvent( choice?.Event?.ResourcePath,
-					choice?.Conditions?.Select( condition => new InspectedCondition( condition.Parameter?.Name, condition.Parameter?.ResourcePath, condition.Invert, condition.Minimum, condition.Maximum, condition.Label ) ).ToArray() ?? Array.Empty<InspectedCondition>() ) ).ToArray() ?? Array.Empty<InspectedSubEvent>() );
+					choice?.Conditions?.Select( condition => new InspectedCondition( condition.Parameter?.Name, condition.Parameter?.ResourcePath, condition.Invert, condition.Minimum, condition.Maximum, condition.Label ) ).ToArray() ?? Array.Empty<InspectedCondition>(), choice?.ExitEvent?.ResourcePath, choice?.ResumePlayback ?? false, choice?.EntryQuantization?.ToString(), choice?.EntryFadeBeats, choice?.EntryCrossfadeSeconds ?? 0, choice?.EarlyEntryConditions?.Select(c=>new InspectedCondition(c.Parameter?.Name,c.Parameter?.ResourcePath,c.Invert,c.Minimum,c.Maximum,c.Label)).ToArray() ?? Array.Empty<InspectedCondition>() ) ).ToArray() ?? Array.Empty<InspectedSubEvent>() );
 		}).ToArray() ?? Array.Empty<InspectedInstrument>();
 
 		return new InspectedTrack(
@@ -235,13 +253,13 @@ public static class AudioMcpTools
 			automation.Points?.Where( point => point is not null ).Select( point => new InspectedAutomationPoint( point.Input, point.Output ) ).ToArray() ?? Array.Empty<InspectedAutomationPoint>() );
 	}
 
-	private static float EstimateDuration( AudioInstrument instrument )
+	private static float EstimateDuration( AudioEvent graph, AudioInstrument instrument, double beatsPerMinute )
 	{
-		if ( instrument?.IsSubEvent == true ) return AudioTimelineView.EstimateDuration( instrument );
-		var sound = instrument?.Sound;
-		if ( sound?.Tracks is null || sound.Tracks.Count == 0 )
+		if ( instrument?.IsSubEvent == true || instrument?.CompoundHits is { Count: > 0 } ) return AudioTimelineView.EstimateDuration( instrument, beatsPerMinute );
+		var source = AudioSourceAuthoring.Resolve( graph, instrument );
+		if ( source?.Tracks is null || source.Tracks.Count == 0 )
 			return 0f;
-		var sourceDuration = sound.Tracks
+		var sourceDuration = source.Tracks
 			.Where( track => track?.Sound.IsValid() == true && track.Sound.IsLoaded )
 			.Select( track => track.Length > 0f ? track.Length : MathF.Max( 0f, track.Sound.Duration - track.Offset ) )
 			.DefaultIfEmpty()
@@ -271,8 +289,10 @@ public static class AudioMcpTools
 		string[] Labels );
 
 	private sealed record InspectedInstrument(
-		string SoundEvent,
-		bool IsEmbedded,
+		Guid SourceId,
+		string SourceVolume,
+		string SourcePitch,
+		string SourceSelectionMode,
 		string[] SoundFiles,
 		float StartTime,
 		float TrimStart,
@@ -285,7 +305,7 @@ public static class AudioMcpTools
 		InspectedCondition[] Conditions,
 		InspectedAutomation[] Automations, string SubEventSelection, string SubEventQuantization, bool RotateSubEventsAtEnd, float SubEventTransitionBeats, InspectedSubEvent[] SubEvents );
 
-	private sealed record InspectedSubEvent( string Event, InspectedCondition[] Conditions );
+	private sealed record InspectedSubEvent( string Event, InspectedCondition[] Conditions, string ExitEvent, bool ResumePlayback, string EntryQuantization, float? EntryFadeBeats, float EntryCrossfadeSeconds, InspectedCondition[] EarlyEntryConditions );
 	private sealed record InspectedCondition( string Parameter, string ParameterResource, bool Invert, float Minimum, float Maximum, string Label );
 	private sealed record InspectedAutomation( string Parameter, string ParameterResource, string Target, InspectedAutomationPoint[] Points );
 	private sealed record InspectedAutomationPoint( float Input, float Output );
