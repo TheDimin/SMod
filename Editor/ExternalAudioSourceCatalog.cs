@@ -21,7 +21,7 @@ internal readonly record struct ExternalAudioSourceFile( string FullPath, string
 
 internal static class ExternalAudioSourceCatalog
 {
-	public const string SourceRoot = @"AudioSource";
+	public static string SourceRoot => Environment.GetEnvironmentVariable( "SMOD_AUDIO_SOURCE_ROOT" ) ?? string.Empty;
 	private static readonly string[] SupportedExtensions = [".wav", ".ogg"];
  private static readonly AudioCatalogScanCache<ExternalAudioSourceFile[]> SharedScan = new();
  internal static int ScanCount;
@@ -29,8 +29,9 @@ internal static class ExternalAudioSourceCatalog
   => SharedScan.Get(() => Task.Run(() => Scan()), refresh);
 
 
-	public static ExternalAudioSourceFile[] Scan( string sourceRoot = SourceRoot )
+	public static ExternalAudioSourceFile[] Scan( string sourceRoot = null )
 	{
+		sourceRoot ??= SourceRoot;
 		Interlocked.Increment(ref ScanCount);
 		if ( !Directory.Exists( sourceRoot ) ) return [];
 		var root = CanonicalRoot( sourceRoot );
@@ -49,21 +50,24 @@ internal static class ExternalAudioSourceCatalog
 
 	public static bool IsSupportedSource( string path ) => SupportedExtensions.Contains( Path.GetExtension( path ), StringComparer.OrdinalIgnoreCase );
 
-	public static bool IsWithinSourceRoot( string path, string sourceRoot = SourceRoot )
+	public static bool IsWithinSourceRoot( string path, string sourceRoot = null )
 	{
+		sourceRoot ??= SourceRoot;
 		if ( string.IsNullOrWhiteSpace( path ) || string.IsNullOrWhiteSpace( sourceRoot ) ) return false;
 		try { return Path.GetFullPath( path ).StartsWith( CanonicalRoot( sourceRoot ), StringComparison.OrdinalIgnoreCase ); }
 		catch ( Exception exception ) when ( exception is ArgumentException or NotSupportedException ) { return false; }
 	}
 
-	public static string GetRelativePath( string path, string sourceRoot = SourceRoot )
+	public static string GetRelativePath( string path, string sourceRoot = null )
 	{
+		sourceRoot ??= SourceRoot;
 		if ( !IsWithinSourceRoot( path, sourceRoot ) ) throw new InvalidOperationException( $"'{path}' is outside the configured AudioSource root." );
 		return Path.GetRelativePath( Path.GetFullPath( sourceRoot ), Path.GetFullPath( path ) );
 	}
 
-	public static string ResolveImportPath( string sourcePath, string assetsPath, string sourceRoot = SourceRoot, Func<string, string, bool> filesEqual = null )
+	public static string ResolveImportPath( string sourcePath, string assetsPath, string sourceRoot = null, Func<string, string, bool> filesEqual = null )
 	{
+		sourceRoot ??= SourceRoot;
 		if ( !IsSupportedSource( sourcePath ) ) throw new InvalidOperationException( $"'{sourcePath}' is not a supported external audio file." );
 		var relativePath = GetRelativePath( sourcePath, sourceRoot );
 		var importRoot = Path.Combine( assetsPath, "Audio", "Source", "External" );

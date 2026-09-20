@@ -1157,3 +1157,7 @@ Buffers are allocated during backing preparation, not during sample rendering. A
 Do not issue a native seek when the requested time already equals the voice's time. In particular, a new voice already starts at zero. The engine can apply a queued seek before its decoder-readiness check. An explicit SoundFile.LoadAsync call is not equivalent to decoder readiness.
 
 For first-use regressions, use a separate fresh client. Editor playback can hide loading faults. The opt-in `start_audio_client_probe` MCP tool creates a temporary networked probe only in a running host; it writes silent playback results to the client log. Remove it with `remove_audio_client_probe`. Source paths are supplied by the caller; no project source list is built into the library. Compare normal Smod playback, explicit preload, and direct native playback. Check both nonzero samples and absence of MP3 warnings. Use `check_audio_native_seek` to verify that real seeks and rewinds still work. No probe runs in normal gameplay unless its temporary component is explicitly created.
+
+## Local development paths
+
+Set `FACEPUNCH_ENGINE` (or the MSBuild `SboxRoot` property) to your s&box installation when building from the command line. Set `SMOD_AUDIO_SOURCE_ROOT` before starting the editor to enable the optional external audio library. If it is unset, the external library is empty. Keep local paths and generated build output out of commits.

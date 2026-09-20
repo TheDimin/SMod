@@ -6,3 +6,8 @@ Editor/Properties/
 # Build outputs were previously ignored by the parent game repository.
 [Bb]in/
 [Oo]bj/
+
+# Local captures and validation files
+/artifacts/
+/.validation/
+/.vs/
