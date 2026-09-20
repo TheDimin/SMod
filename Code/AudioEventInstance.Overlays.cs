@@ -109,7 +109,7 @@ public sealed partial class AudioEventInstance
    if(candidates.Count>1)candidates.RemoveAll(x=>x.Instrument==state.Previous);
    if(candidates.Count==0)continue;
    var request=candidates[overlayRandom.Next(candidates.Count)];
-   var handle=AudioSystem.Backend.Play(request.Sound,_attributes3D,!_hasAttributes3D);
+   var handle=EffectiveBackend.Play(request.Sound,_attributes3D,!_hasAttributes3D);
    handle.Paused=true;
    overlayVoices.Add(new(){Handle=handle,Request=request,Started=overlayClock-late,Position=(float)(position-late),NativeVolume=handle.Volume,NativePitch=handle.Pitch});
    handle.Time=request.SoundTrack.Offset+request.Instrument.TrimStart+(float)late;

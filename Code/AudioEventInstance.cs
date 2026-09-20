@@ -154,6 +154,9 @@ public sealed partial class AudioEventInstance
 	private bool _released;
 	private AudioTimelineDebugSnapshot _timelineDebug;
 
+	internal IAudioPlaybackBackend PlaybackBackend;
+ internal IAudioPlaybackBackend EffectiveBackend=>PlaybackBackend??AudioSystem.Backend;
+
 	internal AudioEventInstance( AudioEventDescription description )
 	{
 		_description = description ?? throw new ArgumentNullException( nameof( description ) );
@@ -760,7 +763,7 @@ public sealed partial class AudioEventInstance
 				}
 
 				IAudioVoice voice = childChoice is null
-					? AudioSystem.Backend.Play( request.Sound, _attributes3D, !_hasAttributes3D )
+					? EffectiveBackend.Play( request.Sound, _attributes3D, !_hasAttributes3D )
 					: TakeSubEvent( request.Instrument, childChoice, MathF.Max( request.Instrument.StartTime, position ), changingChild ? childChoice.EntryFadeBeats ?? request.Instrument.SubEventTransitionBeats : 0 );
 				voice.Paused = true;
 				playingVoice = new PlayingVoice( request.Track, request.Instrument, request.SoundTrack, voice, voice.Volume, voice.Pitch, request.SourceData );
@@ -999,19 +1002,36 @@ public sealed partial class AudioEventInstance
 			ResolveTrimEnd(playingVoice)-EffectiveTrimStart(playingVoice),playingVoice.Pending);
 	}
 
-	internal AudioMusicMixState CaptureSharedMusicMix()
-	{
-		var position=CurrentTimelinePosition;
-		var gains=new Dictionary<AudioTrack,float>();
-        var blockedTails=new List<AudioTrack>();
-		foreach(var track in _description.Resource.Tracks.Prepend(_description.Resource.MasterTrack))
-		{
-			var muted=_auditionMutedTracks.Contains(_description.Resource.MasterTrack)||_auditionMutedTracks.Contains(track);
-			if(muted || blockedParentTails.Contains(track.Id))blockedTails.Add(track);
-			gains[track]=muted?0:_timelineControl.TransitionGain*(_music?.Gain(track,position)??1)*HandoffGain(track)*parentLayerGains.GetValueOrDefault(track.Id,1f);
-		}
-		return new AudioMusicMixState(position,gains,blockedTails);
-	}
+ private AudioMusicMixState previousSharedMix;
+ internal AudioMusicMixState CaptureSharedMusicMix()
+ {
+  var position=CurrentTimelinePosition;
+  var resource=_description.Resource;
+  var count=resource.Tracks.Count+1;
+  var previous=previousSharedMix;
+  Dictionary<AudioTrack,AudioMusicMixState.TrackMix> changed=null;
+  if(previous is null || previous.TrackCount!=count)changed=new(count);
+  for(var i=-1;i<resource.Tracks.Count;i++)
+  {
+   var track=i<0?resource.MasterTrack:resource.Tracks[i];
+   var muted=_auditionMutedTracks.Contains(resource.MasterTrack)||_auditionMutedTracks.Contains(track);
+   var tail=!muted&&!blockedParentTails.Contains(track.Id);
+   var gain=muted?0:_timelineControl.TransitionGain*(_music?.Gain(track,position)??1)*HandoffGain(track)*parentLayerGains.GetValueOrDefault(track.Id,1f);
+   if(!float.IsFinite(gain)||gain<0)throw new ArgumentOutOfRangeException(nameof(gain));
+   if(changed is null && !previous.Matches(track,gain,tail))
+   {
+    changed=new(count);
+    // Earlier entries matched the immutable prior snapshot. Copy only on a change.
+    for(var prior=-1;prior<i;prior++)
+    {
+     var earlier=prior<0?resource.MasterTrack:resource.Tracks[prior];
+     changed.Add(earlier,new(previous.Gain(earlier),previous.TailAllowed(earlier)));
+    }
+   }
+   if(changed is not null)changed[track]=new(gain,tail);
+  }
+  return previousSharedMix=changed is null?previous.WithPosition(position):AudioMusicMixState.Own(position,changed);
+ }
 
 	private void EnsureValid()
 	{
@@ -1264,6 +1284,9 @@ internal sealed class RealtimeAudioTimelineScheduler : IAudioTimelineScheduler
 
 internal sealed class SboxAudioPlaybackBackend : IAudioPlaybackBackend
 {
+ readonly Func<Sandbox.Audio.Mixer> outputMixer;
+ internal SboxAudioPlaybackBackend(Func<Sandbox.Audio.Mixer> outputMixer=null)=>this.outputMixer=outputMixer;
+
 	public IAudioVoice Play( SoundEvent sound, Audio3DAttributes attributes, bool listenLocal )
 	{
 		if ( sound is null )
@@ -1277,6 +1300,7 @@ internal sealed class SboxAudioPlaybackBackend : IAudioPlaybackBackend
 			handle.ListenLocal = true;
 			handle.Position = Vector3.Forward * 64f;
 		}
+		if(handle.IsValid() && outputMixer is not null)handle.TargetMixer=outputMixer();
 		return new SboxAudioVoice( handle );
 	}
 }
@@ -1352,7 +1376,18 @@ internal sealed class SboxAudioVoice : IAudioVoice, IAudioToneVoice, IAudioEchoV
 	public bool IsPlaying => _handle.IsPlaying && !_handle.IsStopped;
 	public SoundFile SelectedSound => _handle.SoundFile;
 	public bool Paused { get => _handle.Paused; set { _handle.Paused = value; PauseEcho(value); } }
-	public float Time { get => _handle.Time; set => _handle.Time = value; }
+	public float Time
+ {
+  get => _handle.Time;
+  set
+  {
+   // Native seek runs before the decoder readiness check. A new voice is already
+   // at zero: seeking there can touch MP3 data before its first asynchronous load.
+   // Keep real seeks (including rewinds after playback) unchanged.
+   if (value == _handle.Time) return;
+   _handle.Time = value;
+  }
+ }
 	public float Volume { get => _handle.Volume; set => _handle.Volume = value; }
 	public float Pitch { get => _handle.Pitch; set => _handle.Pitch = value; }
 	public Vector3 Position { get => _handle.Position; set => _handle.Position = value; }

@@ -292,6 +292,7 @@ public sealed partial class AudioEventInstance
 			Child = new AudioEventDescription( choice.Event ).CreateInstance();
             Child._parentParameterBindings = bindings;
 			Child.SharedMusicSessionFactory=parent.SharedMusicSessionFactory;
+            Child.PlaybackBackend=parent.PlaybackBackend;
 			Child.ParentLiveId = parent.LiveId;
 			Child._parentInstance = parent;
             foreach(var control in parent._description.Resource.Tracks.Prepend(parent._description.Resource.MasterTrack).SelectMany(t=>t.Instruments).Select(i=>i.LayerControl).Where(c=>c is not null && c.Mode==AudioMusicControlMode.SustainLayer))

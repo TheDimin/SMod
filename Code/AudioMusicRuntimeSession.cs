@@ -60,10 +60,15 @@ internal sealed class AudioMusicRuntimeSession : IAudioMusicEventSession
    .ToArray();
   return StartAsync(grid,eventBacking.Parts,resource.MasterTrack.Tone);
  }
+ float[] mixGainScratch;
+ bool[] mixTailScratch;
  public void UpdateEventParameters(IReadOnlyDictionary<AudioParameter,AudioParameterValue> parameters,AudioMusicMixState mix=null)
  {
   if(eventBacking is null)throw new InvalidOperationException("The music session has no event backing binding.");
-  SetBackingGains(eventBacking.EvaluateGains(parameters,mix),eventBacking.EvaluateTailPermissions(parameters,mix));
+  if(mixGainScratch is null || mixGainScratch.Length!=eventBacking.Parts.Count)
+  {mixGainScratch=new float[eventBacking.Parts.Count];mixTailScratch=new bool[eventBacking.Parts.Count];}
+  eventBacking.EvaluateMix(parameters,mix,mixGainScratch,mixTailScratch);
+  SetBackingGains(mixGainScratch,mixTailScratch);
  }
  internal sealed record BackingPart(AudioInstrument Instrument,SoundEventTrack Source,AudioTone TrackTone,float Gain);
  public Task<bool> StartAsync(AudioBeatGrid grid,AudioInstrument instrument,SoundEventTrack selectedSource,AudioTone masterTone,AudioTone trackTone,float backingGain)
@@ -142,7 +147,8 @@ internal sealed class AudioMusicRuntimeSession : IAudioMusicEventSession
  public void SetBackingGains(IReadOnlyList<float> gains,IReadOnlyList<bool> tails=null)
  {
   if(!IsRunning)throw new InvalidOperationException("Music is not running.");
-  session.SetBackingGains(gains,tails);BackingGains=gains.ToArray();
+  session.SetBackingGains(gains,tails);
+  if(!BackingGains.SequenceEqual(gains))BackingGains=gains.ToArray();
  }
  public Task<short[]> PreparePhraseAsync(AudioInstrument instrument,SoundEventTrack source,AudioTone masterTone,AudioTone trackTone)
  {
@@ -275,7 +281,8 @@ internal sealed class SboxMusicOutput : IAudioMusicOutput
  SoundHandle carrier;
  readonly AudioMusicOutputGain gain=new();
  readonly Sandbox.Audio.AudioProcessor capture;
- internal SboxMusicOutput(Sandbox.Audio.AudioProcessor capture=null) => this.capture=capture;
+ readonly Func<Sandbox.Audio.Mixer> outputParent;
+ internal SboxMusicOutput(Sandbox.Audio.AudioProcessor capture=null,Func<Sandbox.Audio.Mixer> outputParent=null) {this.capture=capture;this.outputParent=outputParent;}
  static SoundFile silentClock;
  internal Guid? MixerId=>mixer?.Id;
  internal float CarrierTime=>carrier?.Time??-1;
@@ -289,7 +296,7 @@ internal sealed class SboxMusicOutput : IAudioMusicOutput
   if(source is null || !source.IsLoaded)throw new InvalidOperationException("Native music carrier must be ready before start.");
   try
   {
-   mixer=Sandbox.Audio.Mixer.Default.AddChild();mixer.Name=$"Smod music {Guid.NewGuid()}";mixer.Volume=1;gain.Volume=volume;mixer.AddProcessor(processor);mixer.AddProcessor(gain);
+   mixer=(outputParent?.Invoke()??Sandbox.Audio.Mixer.Default).AddChild();mixer.Name=$"Smod music {Guid.NewGuid()}";mixer.Volume=1;gain.Volume=volume;mixer.AddProcessor(processor);mixer.AddProcessor(gain);
    if(capture is not null)mixer.AddProcessor(capture);
    silentClock ??= SoundFile.FromPcm("smod/runtime/music_clock.vsnd",new byte[4096],new SoundFile.PcmOptions{Channels=2,Rate=44100,Bits=16,Loop=true});
    carrier=Sound.PlayFile(silentClock,1);carrier.TargetMixer=mixer;carrier.SpacialBlend=0;

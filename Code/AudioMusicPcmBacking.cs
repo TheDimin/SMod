@@ -49,9 +49,16 @@ internal sealed class AudioMusicPcmBacking
  {
   ArgumentNullException.ThrowIfNull(gains);
   if(gains.Count!=stems.Length)throw new ArgumentException("Provide one gain for each backing slot.",nameof(gains));
-  var copy=new float[gains.Count];
-  for(var index=0;index<copy.Length;index++){ValidateGain(gains[index]);copy[index]=gains[index];}
   if(tails is not null && tails.Count!=gains.Count)throw new ArgumentException("One tail permission per slot is required.");
+  var previous=System.Threading.Interlocked.CompareExchange(ref targetGains,null,null);
+  var changed=previous is null;
+  for(var index=0;index<gains.Count;index++)
+  {
+   ValidateGain(gains[index]);
+   if(previous is not null && (previous.Gains[index]!=gains[index] || previous.Tails[index]!=(tails?[index]??true)))changed=true;
+  }
+  if(!changed)return;
+  var copy=gains.ToArray();
   System.Threading.Interlocked.Exchange(ref targetGains,new Targets(copy,tails?.ToArray()??Enumerable.Repeat(true,gains.Count).ToArray()));
  }
  internal void ResetEffects(){if(echoes is not null)foreach(var echo in echoes)echo?.Reset();}

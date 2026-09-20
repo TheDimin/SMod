@@ -59,11 +59,17 @@ internal sealed partial class AudioMusicSourceBank : IDisposable
    if(start<0||count<1||start+count>frames||frames>int.MaxValue/2)throw new ArgumentOutOfRangeException(nameof(length));
    var key=new Key(source,(int)start,(int)count,master.BassGainDb,master.BassFrequencyHz,track.BassGainDb,track.BassFrequencyHz);
    if(prepared.TryGetValue(key,out var cached))return cached;
+   var generation=AudioMusicPreparationCache.Generation;
+   if(AudioMusicPreparationCache.Enabled && AudioMusicPreparationCache.Ranges.TryGet(key,out cached))
+   {
+    if(!Admit(0,cached.Length/2))return null;
+    prepared.Add(key,cached);residentBytes+=cached.Length*2L;return cached;
+   }
    // Allow for metadata rounding before allocating the native decoded result.
    var canRetain=AudioMusicSourcePreparation.CanRetainDecoded(start,count,frames,master,track);
    if(!Admit(frames+1024,count,canRetain))return null;
    cancellation.Token.ThrowIfCancellationRequested();
-   NativeDecodeCount++;
+   NativeDecodeCount++;AudioMusicPreparationCache.NativeDecodes++;
    var decoded=await source.GetSamplesInterleavedAsync();
    if(closed)throw new ObjectDisposedException(nameof(AudioMusicSourceBank));
    if(decoded is null || decoded.Length%2!=0 || start+count>decoded.Length/2)
@@ -82,7 +88,10 @@ internal sealed partial class AudioMusicSourceBank : IDisposable
    if(closed)throw new ObjectDisposedException(nameof(AudioMusicSourceBank));
    LastPreparationOffThread=work.OffThread;
    var result=work.Pcm;
-   prepared.Add(key,result);residentBytes+=result.Length*2L;return result;
+   prepared.Add(key,result);residentBytes+=result.Length*2L;
+   if(AudioMusicPreparationCache.Enabled && generation==AudioMusicPreparationCache.Generation)
+    AudioMusicPreparationCache.Ranges.Add(key,result);
+   return result;
   }
   finally { gate.Release(); }
  }

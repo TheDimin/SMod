@@ -300,6 +300,7 @@ public sealed partial class AudioEventEditorWindow : DockWindow, IAssetEditor, A
 
 		if ( _preview.PlaybackState == AudioPlaybackState.Stopped )
 		{
+            AudioEditorPreviewOutput.Configure(_preview);
 			var startPosition = AudioPreviewTransportMath.ResolveStartPosition(
 				_workspace.TimelinePosition,
 				_workspace.AudioContentEnd );

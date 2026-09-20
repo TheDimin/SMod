@@ -39,6 +39,18 @@ internal sealed partial class AudioMusicSourceBank
      return new Key(source,(int)start,(int)count,masterCopy.BassGainDb,masterCopy.BassFrequencyHz,range.Tone.BassGainDb,range.Tone.BassFrequencyHz);
     }).Distinct().Where(key=>!prepared.ContainsKey(key)).ToArray();
     if(requests.Length==0)continue;
+    var generation=AudioMusicPreparationCache.Generation;
+    if(AudioMusicPreparationCache.Enabled)
+    {
+     foreach(var key in requests)
+      if(AudioMusicPreparationCache.Ranges.TryGet(key,out var cached))
+      {
+       if(!Admit(0,cached.Length/2))return false;
+       prepared.Add(key,cached);residentBytes+=cached.Length*2L;
+      }
+     requests=requests.Where(key=>!prepared.ContainsKey(key)).ToArray();
+     if(requests.Length==0)continue;
+    }
     var neededEnd=requests.Max(key=>(long)key.Start+key.Count);
     // An existing neutral backing can supply source samples for its short phrases.
     var borrowed=prepared.FirstOrDefault(pair=>ReferenceEquals(pair.Key.Source,source) && pair.Key.Start==0
@@ -49,7 +61,7 @@ internal sealed partial class AudioMusicSourceBank
     if(decoded is null)
     {
      cancellation.Token.ThrowIfCancellationRequested();
-     NativeDecodeCount++;
+     NativeDecodeCount++;AudioMusicPreparationCache.NativeDecodes++;
      decoded=await source.GetSamplesInterleavedAsync();
     }
     cancellation.Token.ThrowIfCancellationRequested();
@@ -75,6 +87,8 @@ internal sealed partial class AudioMusicSourceBank
     {
      prepared.Add(requests[i],work.Outputs[i]);
      residentBytes+=work.Outputs[i].Length*2L;
+     if(AudioMusicPreparationCache.Enabled && generation==AudioMusicPreparationCache.Generation)
+      AudioMusicPreparationCache.Ranges.Add(requests[i],work.Outputs[i]);
     }
    }
    return true;

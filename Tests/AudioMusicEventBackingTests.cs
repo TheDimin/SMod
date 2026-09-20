@@ -60,6 +60,15 @@ public sealed partial class AudioEventTests
   CollectionAssert.AreEqual(new float[]{1,.5f},binding.EvaluateGains(values));
   values[pressure]=new(0,null,false);
   CollectionAssert.AreEqual(new float[]{1,0},binding.EvaluateGains(values));
+  var gains=new float[2];var tails=new bool[2];
+  var mix=new AudioMusicMixState(0,null,new[]{e.MasterTrack});
+  foreach(var value in new[]{0f,1f,0f})
+  {
+   values[pressure]=new(value,null,false);
+   binding.EvaluateMix(values,mix,gains,tails);
+   CollectionAssert.AreEqual(binding.EvaluateGains(values,mix),gains);
+   CollectionAssert.AreEqual(binding.EvaluateTailPermissions(values,mix),tails);
+  }
   Assert.AreSame(selected,binding.Parts[1].Source);
  }
  [TestMethod] public void MusicEventBacking_ExcludesShortPhrasesAndRejectsPitchChanges()

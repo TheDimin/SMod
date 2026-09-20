@@ -39,6 +39,26 @@ internal sealed class AudioMusicEventBacking
   if(!float.IsFinite(gain)||gain<0)throw new InvalidOperationException("Music track gain must be finite and zero or greater.");
   return gain;
  }
+ /// <summary>Evaluate each slot once into session-owned scratch. The renderer copies changed values before publication.</summary>
+ internal void EvaluateMix(IReadOnlyDictionary<AudioParameter,AudioParameterValue> parameters,AudioMusicMixState mix,Span<float> gains,Span<bool> tails)
+ {
+  if(gains.Length!=slots.Length || tails.Length!=slots.Length)throw new ArgumentException("One output per backing slot is required.");
+  for(var index=0;index<slots.Length;index++)
+  {
+   var slot=slots[index];
+   var current=AudioEventEvaluator.EvaluateSelectedVoice(resource,slot,parameters);
+   tails[index]=current.Active && (mix?.TailAllowed(slot.Track)??true);
+   gains[index]=0;
+   if(!current.Active)continue;
+   var gain=Gain(slot.SourceData,current.Volume,current.Pitch);
+   if(mix is not null)
+   {
+    var duration=AudioMusicSourcePreparation.ResolveRange(slot.Instrument,slot.SoundTrack).Length;
+    gain*=mix.Gain(slot.Track)*(IncludesTimeline?1:AudioInstrumentFade.Gain(slot.Instrument,mix.Position-slot.StartTime,duration));
+   }
+   gains[index]=gain;
+  }
+ }
  public bool[] EvaluateTailPermissions(IReadOnlyDictionary<AudioParameter,AudioParameterValue> parameters,AudioMusicMixState mix)
   =>slots.Select(slot=>AudioEventEvaluator.EvaluateSelectedVoice(resource,slot,parameters).Active && (mix?.TailAllowed(slot.Track)??true)).ToArray();
  public float[] EvaluateGains(IReadOnlyDictionary<AudioParameter,AudioParameterValue> parameters,AudioMusicMixState mix=null)

@@ -27,21 +27,32 @@ internal static class AudioInstrumentFade
 /// remain separate. An event can capture its handoff, director and audition state once per update.</summary>
 internal sealed class AudioMusicMixState
 {
- readonly Dictionary<AudioTrack,float> gains;
- readonly HashSet<AudioTrack> blockedTails;
- public bool TailAllowed(AudioTrack track)=>blockedTails?.Contains(track)!=true;
+ internal readonly record struct TrackMix(float Gain,bool TailAllowed);
+ readonly Dictionary<AudioTrack,TrackMix> tracks;
+ public bool TailAllowed(AudioTrack track)=>tracks is null || !tracks.TryGetValue(track,out var value)||value.TailAllowed;
+ public float Gain(AudioTrack track)=>tracks is not null && tracks.TryGetValue(track,out var value)?value.Gain:1;
  public float Position {get;}
+ internal int TrackCount=>tracks?.Count??-1;
+ internal bool Matches(AudioTrack track,float gain,bool tailAllowed)
+  =>tracks.TryGetValue(track,out var value)&&value.Gain==gain&&value.TailAllowed==tailAllowed;
+ internal AudioMusicMixState WithPosition(float position)=>position==Position?this:new(position,tracks);
+ internal static AudioMusicMixState Own(float position,Dictionary<AudioTrack,TrackMix> tracks)=>new(position,tracks);
+ private AudioMusicMixState(float position,Dictionary<AudioTrack,TrackMix> owned)
+ {
+  if(!float.IsFinite(position)||position<0)throw new ArgumentOutOfRangeException(nameof(position));
+  Position=position;tracks=owned;
+ }
  public AudioMusicMixState(float position,IReadOnlyDictionary<AudioTrack,float> trackGains=null,IEnumerable<AudioTrack> blockedTails=null)
  {
   if(!float.IsFinite(position)||position<0)throw new ArgumentOutOfRangeException(nameof(position));
-  Position=position;gains=new();this.blockedTails=new(blockedTails??Enumerable.Empty<AudioTrack>());
-  if(trackGains is null)return;
-  foreach(var item in trackGains)
+  Position=position;tracks=new();
+  if(trackGains is not null)foreach(var item in trackGains)
   {
    ArgumentNullException.ThrowIfNull(item.Key);
    if(!float.IsFinite(item.Value)||item.Value<0)throw new ArgumentOutOfRangeException(nameof(trackGains));
-   gains.Add(item.Key,item.Value);
+   tracks.Add(item.Key,new(item.Value,true));
   }
+  if(blockedTails is not null)foreach(var track in blockedTails)
+   tracks[track]=new(Gain(track),false);
  }
- public float Gain(AudioTrack track)=>gains.TryGetValue(track,out var value)?value:1;
 }
