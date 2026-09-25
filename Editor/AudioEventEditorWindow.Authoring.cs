@@ -18,11 +18,11 @@ public sealed partial class AudioEventEditorWindow
   return window;
  }
  internal static string Fingerprint(string value)=>Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)));
- internal string AuthoringRevision()=>Fingerprint(_event.Serialize().ToJsonString()+"\n"+File.ReadAllText(_asset.AbsolutePath));
+ internal string AuthoringRevision()=>Fingerprint(AudioDocumentSaveState.Canonical(_event.Serialize()).ToJsonString()+"\n"+File.ReadAllText(_asset.AbsolutePath));
  private bool DiskMatchesEditor()
  {
   var disk=new AudioEvent();disk.LoadFromJson(File.ReadAllText(_asset.AbsolutePath));
-  return JsonNode.DeepEquals(_event.Serialize(),disk.Serialize());
+  return AudioDocumentSaveState.Matches(_event.Serialize(),disk.Serialize());
  }
  internal object AuthoringInspect()=>new {Path=_asset.RelativePath,Revision=AuthoringRevision(),Dirty=_dirtyResources.Contains(_event),
   DiskHash=Fingerprint(File.ReadAllText(_asset.AbsolutePath)),DiskMatchesEditor=DiskMatchesEditor(),OtherUnsavedResources=_dirtyResources.Where(r=>r!=_event).Select(r=>r.ResourcePath).ToArray(),State=_event.Serialize(),Validation=AudioEventValidator.Validate(_event)};
@@ -102,7 +102,7 @@ public sealed partial class AudioEventEditorWindow
   {
    if(!_asset.SaveToDisk(_event))throw new IOException("Failed to save "+_asset.RelativePath);
    var roundtrip=new AudioEvent();roundtrip.LoadFromJson(File.ReadAllText(_asset.AbsolutePath));
-   if(!JsonNode.DeepEquals(_event.Serialize(),roundtrip.Serialize()))throw new IOException("Saved event differs from editor state: "+_asset.RelativePath);
+   if(!AudioDocumentSaveState.Matches(_event.Serialize(),roundtrip.Serialize()))throw new IOException("Saved event differs from editor state: "+_asset.RelativePath);
    _savedStates[_event]=_event.Serialize();_lastStates[_event]=_event.Serialize();_dirtyResources.Remove(_event);UpdateWindowTitle();
    return AuthoringInspect();
   }

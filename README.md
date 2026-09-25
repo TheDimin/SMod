@@ -1161,3 +1161,8 @@ For first-use regressions, use a separate fresh client. Editor playback can hide
 ## Local development paths
 
 Set `FACEPUNCH_ENGINE` (or the MSBuild `SboxRoot` property) to your s&box installation when building from the command line. Set `SMOD_AUDIO_SOURCE_ROOT` before starting the editor to enable the optional external audio library. If it is unset, the external library is empty. Keep local paths and generated build output out of commits.
+
+
+### External source import through MCP
+
+`import_audio_source(sourcePath, bitrate)` uses the same byte-preserving import path as the editor source library. The file must be within the configured `SMOD_AUDIO_SOURCE_ROOT` and be WAV or OGG. It reuses identical imports, enables native compression (128-256 kbps), compiles, and checks native load before returning the registered sound path. It does not alter the original file or add an instrument to an event. Use revision-checked authoring tools to connect the returned source. Configure source roots in the host project; the library does not choose a project folder.

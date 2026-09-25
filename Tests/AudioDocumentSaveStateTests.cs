@@ -12,4 +12,18 @@ public sealed partial class AudioEventTests
   Assert.IsTrue(Editor.AudioDocumentSaveState.Conflicts(original,original,newer));
   Assert.IsTrue(Editor.AudioDocumentSaveState.Matches(original,JsonNode.Parse("{\"Name\":\"Lead\",\"Volume\":1}").AsObject()));
  }
+
+ [TestMethod] public void AudioDocumentSave_IgnoresOnlyTransientSoundReferenceIdentity()
+ {
+  JsonObject State(string id,string path)=>JsonNode.Parse("{\"Sources\":[{\"Id\":\"authored-source\",\"Tracks\":[{\"Sound\":{\"Id\":\""+id+"\",\"Path\":\""+path+"\"}}]}]}").AsObject();
+  var original=State("native-a","audio/menu.vsnd");
+  var refreshed=State("native-b","audio/menu.vsnd");
+  Assert.IsTrue(Editor.AudioDocumentSaveState.Matches(original,refreshed));
+  var saved=original.DeepClone().AsObject();saved["Sources"][0]["Tracks"][0]["Sound"]="audio/menu.vsnd";
+  Assert.IsTrue(Editor.AudioDocumentSaveState.Matches(original,saved));
+  Assert.IsFalse(Editor.AudioDocumentSaveState.Matches(original,State("native-a","audio/other.vsnd")));
+  refreshed["Sources"][0]["Id"]="changed-source";
+  Assert.IsFalse(Editor.AudioDocumentSaveState.Matches(original,refreshed));
+  Assert.AreEqual("native-a",original["Sources"][0]["Tracks"][0]["Sound"]["Id"].GetValue<string>());
+ }
 }
