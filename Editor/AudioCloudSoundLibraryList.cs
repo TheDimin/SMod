@@ -53,6 +53,7 @@ internal sealed class AudioCloudSoundLibraryList : ListView
 		if ( item is not Package package ) return;
 		var menu = new ContextMenu( this );
 		menu.AddHeading( package.Title ?? package.Ident );
+		AudioEventEditorWindow.AddLibraryGetPath( menu, "package", package.FullIdent );
 		menu.AddOption( _preview.IsActive( AudioPreviewSource.CloudSound, package.FullIdent ) ? "Stop Preview" : "Preview", "play_arrow",
 			() => _ = TogglePreviewAsync( package ) );
 		menu.OpenAtCursor();

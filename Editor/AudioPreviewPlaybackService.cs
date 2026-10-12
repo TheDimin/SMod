@@ -242,6 +242,7 @@ internal sealed class AudioPreviewPlaybackService
 		if ( !(handle?.IsValid() ?? false) )
 			return null;
 
+		handle.TargetMixer = AudioEditorPreviewOutput.GetMixer();
 		handle.ListenLocal = true;
 		handle.Position = Vector3.Forward * 64f;
 		return new SoundPreviewHandle( handle );

@@ -183,10 +183,11 @@ internal static class AudioTempoAnalyzer
 		var tracks = new[] { audioEvent.MasterTrack }.Concat( audioEvent.Tracks ?? Enumerable.Empty<AudioTrack>() );
 		foreach ( var instrument in tracks.Where( track => track is not null ).SelectMany( track => track.Instruments ?? Enumerable.Empty<AudioInstrument>() ) )
 		{
-			if ( instrument?.Sound?.Tracks is null || instrument.StartTime >= region.End.Seconds )
+			var sourceDefinition = AudioSourceAuthoring.Resolve( audioEvent, instrument );
+			if ( sourceDefinition?.Tracks is null || instrument.StartTime >= region.End.Seconds )
 				continue;
 
-			foreach ( var variation in instrument.Sound.Tracks )
+			foreach ( var variation in sourceDefinition.Tracks )
 			{
 				var sound = variation?.Sound;
 				if ( !sound.IsValid() )
