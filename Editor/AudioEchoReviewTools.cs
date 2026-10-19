@@ -23,7 +23,7 @@ public static class AudioEchoReviewTools
   Sandbox.SoundHandle carrier=null;float tail=0,ended=0;
   try
   {
-   mixer.AddProcessor(processor);mixer.AddProcessor(tap);
+   mixer.AddProcessor(processor.NativeProcessor);mixer.AddProcessor(tap);
    var clock=Sandbox.SoundFile.FromPcm("smod/runtime/release_echo_check.vsnd",new byte[4096],new Sandbox.SoundFile.PcmOptions{Channels=2,Rate=44100,Bits=16,Loop=true});
    carrier=Sandbox.Sound.PlayFile(clock,1);carrier.TargetMixer=mixer;carrier.ListenLocal=true;carrier.SpacialBlend=0;carrier.ReverbEnabled=false;
    await Task.Delay(500);backing.SetGains(new[]{0f},new[]{true});await Task.Delay(100);tap.Peak=0;

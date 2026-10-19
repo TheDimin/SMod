@@ -53,7 +53,7 @@ public readonly record struct Audio3DAttributes
 	}
 }
 
-public static class AudioSystem
+public static partial class AudioSystem
 {
 	private static IAudioPlaybackBackend _backend = new SboxAudioPlaybackBackend();
 	private static IAudioTimelineScheduler _timelineScheduler = new RealtimeAudioTimelineScheduler();
@@ -1325,7 +1325,7 @@ internal sealed class SboxAudioVoice : IAudioVoice, IAudioToneVoice, IAudioEchoV
  public void SetEcho(AudioEchoEffect effect)
  {
   if(effect is null || !effect.IsValid || effect.WetGain==0 || echoProcessor is not null || _handle.IsStopped)return;
-  EnsureEffectMixer();echoProcessor=new(effect);toneMixer.AddProcessor(echoProcessor);
+  EnsureEffectMixer();echoProcessor=new(effect);toneMixer.AddProcessor(echoProcessor.NativeProcessor);
   echoClock??=SoundFile.FromPcm("smod/runtime/echo_clock.vsnd",new byte[4096],new SoundFile.PcmOptions{Channels=2,Rate=44100,Bits=16,Loop=true});
   echoCarrier=Sound.PlayFile(echoClock,1);echoCarrier.TargetMixer=toneMixer;echoCarrier.SpacialBlend=0;
   echoCarrier.ListenLocal=true;echoCarrier.DistanceAttenuation=false;echoCarrier.AirAbsorption=false;

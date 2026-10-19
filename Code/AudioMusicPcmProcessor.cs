@@ -5,9 +5,20 @@ namespace Smod;
 /// A session command bridge must own later changes; callers must not mutate the core
 /// from the main thread while this processor is attached.
 /// </summary>
-internal sealed class AudioMusicPcmProcessor : Sandbox.Audio.AudioProcessor<AudioMusicPcmProcessor.State>
+internal sealed class AudioMusicPcmProcessor
 {
-	internal sealed class State : ListenerState { }
+	internal sealed class State : Sandbox.Audio.AudioProcessor.ListenerState { }
+	NativeAdapter nativeProcessor;
+	internal Sandbox.Audio.AudioProcessor NativeProcessor => nativeProcessor ??= new NativeAdapter( this );
+	sealed class NativeAdapter( AudioMusicPcmProcessor owner ) : Sandbox.Audio.AudioProcessor<State>
+	{
+		protected override void ProcessSingleChannel( Sandbox.Audio.AudioChannel channel, Span<float> input )
+		{
+			owner.listener ??= CurrentState;
+			if ( !ReferenceEquals( owner.listener, CurrentState ) ) { owner.UnsupportedListener = true; return; }
+			owner.MixChannel( channel.Get(), input );
+		}
+	}
 	readonly AudioMusicPcmRenderer renderer;
 	readonly AudioMusicPcmCommands commands;
 	readonly float[] block;
@@ -30,12 +41,6 @@ internal sealed class AudioMusicPcmProcessor : Sandbox.Audio.AudioProcessor<Audi
 	internal void LimitPlaybackTo(long sample)=>renderer.LimitPlaybackTo(sample);
  public bool UnsupportedListener { get; private set; }
 	public bool InvalidChannelSequence { get; private set; }
-	protected override void ProcessSingleChannel( Sandbox.Audio.AudioChannel channel, Span<float> input )
-	{
-		listener ??= CurrentState;
-		if ( !ReferenceEquals( listener, CurrentState ) ) { UnsupportedListener = true; return; }
-		MixChannel( channel.Get(), input );
-	}
 	// Kept separate from the engine callback for deterministic block-boundary coverage.
 	internal void MixChannel( int channel, Span<float> input )
 	{

@@ -14,6 +14,8 @@ Playback-plan inspection must not advance source variation history. A plan witho
 
 ## Graph-owned source data
 
+Gameplay uses `AudioSystem.TryPlay` for optional one-shot audio. It contains failures in creation, configuration, playback, and cleanup, and reports a failed resource once. `AudioPlaybackGuard` contains failures for retained channels and disables the failed channel. Cleanup still runs after a failure. Graph authoring and validation APIs remain strict so authors can find invalid content.
+
 Explicit live audition refresh applies source volume and pitch changes to retained ordinary voices without restarting their source position. Ranged values keep their selected position instead of rolling a new value on each edit. Shared music still requires fixed unit pitch.
 
 Store source variation data in `AudioEvent.Sources`. Each `AudioInstrument.SourceId` addresses one source in that same graph. Multiple clips may share a source entry. A sub-graph remains a separate AudioEvent resource and cannot use a parent's source ID. Source IDs must be unique among all element IDs in their graph.

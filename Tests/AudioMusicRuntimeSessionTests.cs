@@ -59,9 +59,9 @@ public sealed partial class AudioEventTests
   public int FadeFrames;
   public System.Threading.Tasks.Task<bool> FadeOutAsync(int frames){FadeFrames=frames;return FadeCompletion.Task;}
   public bool Fail;
-  public void Start(Sandbox.Audio.AudioProcessor processor,Sandbox.SoundFile source,float volume)
+  public void Start(AudioMusicPcmProcessor processor,Sandbox.SoundFile source,float volume)
   {
-   Starts++;if(Fail)throw new InvalidOperationException("test start failure");Processor=(AudioMusicPcmProcessor)processor;Volume=volume;
+   Starts++;if(Fail)throw new InvalidOperationException("test start failure");Processor=processor;Volume=volume;
   }
   public void Render(){Processor.MixChannel(0,new float[512]);Processor.MixChannel(1,new float[512]);}
   public void Dispose()=>Disposals++;

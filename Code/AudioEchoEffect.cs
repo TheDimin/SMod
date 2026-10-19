@@ -37,9 +37,15 @@ internal sealed class AudioEchoDelay
  }
 }
 
-internal sealed class AudioEchoProcessor : Sandbox.Audio.AudioProcessor<AudioEchoProcessor.State>
+internal sealed class AudioEchoProcessor
 {
- internal sealed class State : ListenerState {internal AudioEchoDelay[] Channels;internal long Position,BlockPosition;}
+ Sandbox.Audio.AudioProcessor nativeProcessor;
+ internal Sandbox.Audio.AudioProcessor NativeProcessor => nativeProcessor ??= new NativeAdapter(this);
+ sealed class NativeAdapter(AudioEchoProcessor owner) : Sandbox.Audio.AudioProcessor<State>
+ {
+  protected override void ProcessSingleChannel(Sandbox.Audio.AudioChannel channel,Span<float> input)=>owner.ProcessChannel(CurrentState,channel.Get(),input);
+ }
+ internal sealed class State : Sandbox.Audio.AudioProcessor.ListenerState {internal AudioEchoDelay[] Channels;internal long Position,BlockPosition;}
  readonly AudioEchoEffect effect;
  long frames,tailStart=-1;
  int paused,suppressed,killed;
@@ -49,7 +55,6 @@ internal sealed class AudioEchoProcessor : Sandbox.Audio.AudioProcessor<AudioEch
  internal AudioEchoProcessor(AudioEchoEffect value)=>effect=new(){DelaySeconds=value.DelaySeconds,WetGain=value.WetGain,Feedback=value.Feedback,TailSeconds=value.TailSeconds};
  internal void BeginTail()=>System.Threading.Interlocked.CompareExchange(ref tailStart,System.Threading.Interlocked.Read(ref frames),-1);
  internal bool Finished=>Killed || System.Threading.Interlocked.Read(ref tailStart)>=0 && System.Threading.Interlocked.Read(ref frames)-System.Threading.Interlocked.Read(ref tailStart)>=effect.TailSeconds*44100;
- protected override void ProcessSingleChannel(Sandbox.Audio.AudioChannel channel,Span<float> input)=>ProcessChannel(CurrentState,channel.Get(),input);
  internal void ProcessChannel(State state,int index,Span<float> input)
  {
   if(Killed){input.Clear();return;}

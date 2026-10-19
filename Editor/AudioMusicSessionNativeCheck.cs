@@ -8,7 +8,7 @@ public sealed class AudioMusicSessionNativeCheck
 	public void SetPaused(bool paused) => session.SetPaused(paused);
 	public long PausedFrames => session.Processor.PublishedPausedFrames;
 	public sealed record Request( long Sample, System.Threading.Tasks.Task<bool> Admission );
-	public Sandbox.Audio.AudioProcessor Processor => session.Processor;
+	public Sandbox.Audio.AudioProcessor Processor => session.Processor.NativeProcessor;
 	public long Position => session.Position;
 	public Request Schedule( AudioEventInstance process, short[] pcm )
 	{

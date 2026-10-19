@@ -11,6 +11,7 @@ public sealed class SoundPointComponent : Component
 	private AudioEvent _instanceEvent;
 	private bool _hasStarted;
 	private bool _resumeWhenEnabled;
+	private AudioPlaybackGuard _playback = new( exception => Log.Warning( $"Sound point audio disabled: {exception.Message}" ) );
 	private List<SoundPointParameterSnapshot> _appliedParameters = new();
 
 	[Property, Group( "Playback" ), Title( "Audio Event" )]
@@ -25,7 +26,8 @@ public sealed class SoundPointComponent : Component
 			var resume = IsPlaying;
 			StopAndRelease( AudioStopMode.Immediate );
 			_audioEvent = value;
-			Parameters = SynchronizeParameters( value, Parameters );
+			_playback = new AudioPlaybackGuard( exception => Log.Warning( $"Sound point audio disabled: {exception.Message}" ) );
+			_playback.TryRun( () => Parameters = SynchronizeParameters( value, Parameters ) );
 			_appliedParameters.Clear();
 
 			if ( resume && Active )
@@ -40,7 +42,16 @@ public sealed class SoundPointComponent : Component
 	public List<SoundPointParameterValue> Parameters { get; set; } = new();
 
 	[Property, ReadOnly, JsonIgnore, Group( "Runtime" )]
-	public AudioPlaybackState PlaybackState => _instance?.PlaybackState ?? AudioPlaybackState.Stopped;
+	public AudioPlaybackState PlaybackState
+	{
+		get
+		{
+			var state = AudioPlaybackState.Stopped;
+			if ( !_playback.TryRun( () => state = _instance?.PlaybackState ?? AudioPlaybackState.Stopped ) )
+				StopAndRelease( AudioStopMode.Immediate );
+			return state;
+		}
+	}
 
 	[Property, ReadOnly, JsonIgnore, Group( "Runtime" )]
 	public bool IsPlaying => PlaybackState is AudioPlaybackState.Starting or AudioPlaybackState.Playing;
@@ -48,7 +59,7 @@ public sealed class SoundPointComponent : Component
 	protected override void OnStart()
 	{
 		_hasStarted = true;
-		Parameters = SynchronizeParameters( AudioEvent, Parameters );
+		_playback.TryRun( () => Parameters = SynchronizeParameters( AudioEvent, Parameters ) );
 		if ( PlayOnStart )
 			Play();
 	}
@@ -63,6 +74,12 @@ public sealed class SoundPointComponent : Component
 	}
 
 	protected override void OnUpdate()
+	{
+		if ( !_playback.TryRun( UpdatePlayback ) )
+			StopAndRelease( AudioStopMode.Immediate );
+	}
+
+	private void UpdatePlayback()
 	{
 		if ( _instance is null )
 			return;
@@ -96,6 +113,12 @@ public sealed class SoundPointComponent : Component
 	[Button( Title = "Play", Icon = "play_arrow" )]
 	public void Play()
 	{
+		if ( !_playback.TryRun( PlayCore ) )
+			StopAndRelease( AudioStopMode.Immediate );
+	}
+
+	private void PlayCore()
+	{
 		if ( AudioEvent is null )
 			throw new InvalidOperationException( $"{nameof( SoundPointComponent )} on '{GameObject.Name}' requires an Audio Event before playback." );
 
@@ -118,7 +141,8 @@ public sealed class SoundPointComponent : Component
 		if ( _instance is null )
 			return;
 
-		_instance.Stop( AudioStopMode.AllowFadeout );
+		if ( !_playback.TryRun( () => _instance.Stop( AudioStopMode.AllowFadeout ) ) )
+			StopAndRelease( AudioStopMode.Immediate );
 	}
 
 	internal static List<SoundPointParameterValue> SynchronizeParameters(
@@ -182,11 +206,12 @@ public sealed class SoundPointComponent : Component
 		if ( _instance is null )
 			return;
 
-		_instance.Stop( stopMode );
-		_instance.Release();
+		var instance = _instance;
 		_instance = null;
 		_instanceEvent = null;
 		_appliedParameters.Clear();
+		_playback.Cleanup( () => instance.Stop( stopMode ) );
+		_playback.Cleanup( instance.Release );
 	}
 }
 

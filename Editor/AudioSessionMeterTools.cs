@@ -34,7 +34,7 @@ public static partial class AudioSessionMeterTools
  }
  static readonly JsonSerializerOptions JsonOptions=new(){PropertyNamingPolicy=JsonNamingPolicy.CamelCase};
  static string Folder=>System.IO.Path.GetFullPath(System.IO.Path.Combine(Project.Current.GetAssetsPath(),"../.validation/audio-sessions"));
- static StatusResult Describe(Session s)=>s is null?new(false,null,null,0,0,0,0,0,0,null,null):new(s.Recording,s.Id,s.Path,s.Clock.Elapsed.TotalSeconds,s.Windows,s.VoiceSamples,s.Tap.Dropped,s.Tap.UnsupportedChannels,s.Tap.PairingErrors,s.Error,s.Latest,!s.Tap.Removed&&s.Mixer.GetProcessors().Contains(s.Tap));
+ static StatusResult Describe(Session s)=>s is null?new(false,null,null,0,0,0,0,0,0,null,null):new(s.Recording,s.Id,s.Path,s.Clock.Elapsed.TotalSeconds,s.Windows,s.VoiceSamples,s.Tap.Dropped,s.Tap.UnsupportedChannels,s.Tap.PairingErrors,s.Error,s.Latest,!s.Tap.Removed&&s.Mixer.GetProcessors().Contains(s.Tap.NativeProcessor));
 
  /// <summary>Start a passive session recorder and return immediately. Records master per-listener/channel sample peak/RMS dBFS, clipping, mono loss, and Smod instrument snapshots every 100 ms to JSONL. intervalSeconds is 0.25-10; maxMinutes is 1-240 (default 120). Writes statistics only, never PCM. Captures all in-app master audio including previews; excludes Windows/device volume. Multiple listeners remain separate, not a claimed final sum. Use audio_session_status, audio_session_mark, audio_session_stop, then audio_session_report or audio_session_read.</summary>
  [McpTool("audio_session_start")]
@@ -53,9 +53,9 @@ public static partial class AudioSessionMeterTools
     measurement="Master processor input per listener and channel; channel -1 is the front stereo pair, scaled by master mixer volume and Sound.MasterVolume; before engine hard limiting and Windows/device output.",
     limits="Not dBSPL, LUFS or true peak. Multiple listeners are not summed. Silence without callbacks is a gap. Voice snapshots can miss sounds shorter than 100 ms. Voice gains are control values, not isolated measured contributions. Last partial audio window is not emitted.",
     stopLimits="Duration, 512 MiB file, mixer replacement/removal, or explicit stop. Only this processor is detached.",masterMixer=mixer.Id,masterVolume=mixer.Volume,soundMasterVolume=Sound.MasterVolume});
-   mixer.AddProcessor(s.Tap);current=s;return Describe(s);
+   mixer.AddProcessor(s.Tap.NativeProcessor);current=s;return Describe(s);
   }
-  catch{if(mixer.GetProcessors().Contains(s.Tap))mixer.RemoveProcessor(s.Tap);s.Writer?.Dispose();throw;}
+  catch{if(mixer.GetProcessors().Contains(s.Tap.NativeProcessor))mixer.RemoveProcessor(s.Tap.NativeProcessor);s.Writer?.Dispose();throw;}
  }
  /// <summary>Read recorder status and the latest completed audio window without changing capture or playback.</summary>
  [McpTool.ReadOnly("audio_session_status")]
@@ -89,7 +89,7 @@ public static partial class AudioSessionMeterTools
   var s=current;if(s is null)return;
   try
   {
-   if(!ReferenceEquals(s.Mixer,Mixer.Master)||s.Tap.Removed||s.Mixer.GetProcessors().LastOrDefault()!=s.Tap){Finish(s,"Master mixer or final processor position changed.");return;}
+   if(!ReferenceEquals(s.Mixer,Mixer.Master)||s.Tap.Removed||s.Mixer.GetProcessors().LastOrDefault()!=s.Tap.NativeProcessor){Finish(s,"Master mixer or final processor position changed.");return;}
    Drain(s);
    var now=s.Clock.Elapsed.TotalSeconds;
    if(now>=s.NextVoices)
@@ -118,7 +118,7 @@ public static partial class AudioSessionMeterTools
   current=null;s.Recording=false;s.Error=error;
   try
   {
-   if(!s.Tap.Removed)s.Mixer.RemoveProcessor(s.Tap);
+   if(!s.Tap.Removed)s.Mixer.RemoveProcessor(s.Tap.NativeProcessor);
    Drain(s);s.Clock.Stop();
    Write(s,new{type="footer",seconds=s.Clock.Elapsed.TotalSeconds,s.Windows,s.VoiceSamples,error,s.Tap.Dropped,s.Tap.UnsupportedChannels,s.Tap.PairingErrors,s.MaximumVoiceGap});
   }

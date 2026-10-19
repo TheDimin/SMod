@@ -8,9 +8,20 @@ using Smod;
 namespace Editor.Mcp;
 
 // Editor only. Input is copied for stereo pairing but never changed or retained as audio.
-internal sealed class AudioSessionMeterTap : AudioProcessor<AudioSessionMeterTap.State>
+internal sealed class AudioSessionMeterTap
 {
- public sealed class State : ListenerState
+ AudioProcessor nativeProcessor;
+ internal AudioProcessor NativeProcessor => nativeProcessor ??= new NativeAdapter(this);
+ sealed class NativeAdapter(AudioSessionMeterTap owner) : AudioProcessor<State>
+ {
+  protected override void ProcessSingleChannel(AudioChannel channel,Span<float> input)
+  {
+   if(owner.Removed)return;
+   owner.Observe(CurrentState,channel.Get(),input,owner.master.Volume*Sound.MasterVolume);
+  }
+  protected override void OnDestroy(){owner.Removed=true;}
+ }
+ public sealed class State : AudioProcessor.ListenerState
  {
   internal readonly float[] Left=new float[8192];
   internal int LeftCount,Id;
@@ -27,11 +38,6 @@ internal sealed class AudioSessionMeterTap : AudioProcessor<AudioSessionMeterTap
  internal int Dropped,UnsupportedChannels,PairingErrors;
  internal volatile bool Removed;
  internal AudioSessionMeterTap(Mixer master,double seconds){this.master=master;frames=(int)Math.Round(seconds*44100);}
- protected override void ProcessSingleChannel(AudioChannel channel,Span<float> input)
- {
-  if(Removed)return;
-  Observe(CurrentState,channel.Get(),input,master.Volume*Sound.MasterVolume);
- }
  internal void Observe(State state,int c,ReadOnlySpan<float> input,float downstreamGain)
  {
   if(state.Id==0)state.Id=Interlocked.Increment(ref nextListener);
@@ -66,5 +72,4 @@ internal sealed class AudioSessionMeterTap : AudioProcessor<AudioSessionMeterTap
   if(!windows.TryDequeue(out window))return false;
   Interlocked.Decrement(ref queued);return true;
  }
- protected override void OnDestroy(){Removed=true;}
 }

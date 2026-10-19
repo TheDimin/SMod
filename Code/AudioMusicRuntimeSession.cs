@@ -273,7 +273,7 @@ internal interface IAudioMusicOutput : IDisposable
  float Volume {get;set;}
  bool IsStopped {get;}
  Task<bool> FadeOutAsync(int frames);
- void Start(Sandbox.Audio.AudioProcessor processor,SoundFile carrier,float volume);
+ void Start(AudioMusicPcmProcessor processor,SoundFile carrier,float volume);
 }
 internal sealed class SboxMusicOutput : IAudioMusicOutput
 {
@@ -290,13 +290,13 @@ internal sealed class SboxMusicOutput : IAudioMusicOutput
  public bool IsStopped=>carrier is null || carrier.IsStopped;
  public float Volume {get=>gain.Volume;set=>gain.Volume=value;}
  public Task<bool> FadeOutAsync(int frames)=>gain.FadeOutAsync(frames);
- public void Start(Sandbox.Audio.AudioProcessor processor,SoundFile source,float volume)
+ public void Start(AudioMusicPcmProcessor processor,SoundFile source,float volume)
  {
   if(mixer is not null)throw new InvalidOperationException("Native music output already exists.");
   if(source is null || !source.IsLoaded)throw new InvalidOperationException("Native music carrier must be ready before start.");
   try
   {
-   mixer=(outputParent?.Invoke()??Sandbox.Audio.Mixer.Default).AddChild();mixer.Name=$"Smod music {Guid.NewGuid()}";mixer.Volume=1;gain.Volume=volume;mixer.AddProcessor(processor);mixer.AddProcessor(gain);
+   mixer=(outputParent?.Invoke()??Sandbox.Audio.Mixer.Default).AddChild();mixer.Name=$"Smod music {Guid.NewGuid()}";mixer.Volume=1;gain.Volume=volume;mixer.AddProcessor(processor.NativeProcessor);mixer.AddProcessor(gain.NativeProcessor);
    if(capture is not null)mixer.AddProcessor(capture);
    silentClock ??= SoundFile.FromPcm("smod/runtime/music_clock.vsnd",new byte[4096],new SoundFile.PcmOptions{Channels=2,Rate=44100,Bits=16,Loop=true});
    carrier=Sound.PlayFile(silentClock,1);carrier.TargetMixer=mixer;carrier.SpacialBlend=0;

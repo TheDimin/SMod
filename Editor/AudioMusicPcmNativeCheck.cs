@@ -8,7 +8,7 @@ public sealed class AudioMusicPcmCaptureSession
 	readonly AudioMusicPcmCommands commands = new( 2 );
 	readonly AudioMusicPcmProcessor processor;
 	public AudioMusicPcmCaptureSession() { processor = new( renderer, commands: commands ); }
-	public Sandbox.Audio.AudioProcessor Processor => processor;
+	public Sandbox.Audio.AudioProcessor Processor => processor.NativeProcessor;
 	public long Position => processor.PublishedPosition;
 	public bool UnsupportedListener => processor.UnsupportedListener;
 	public bool InvalidChannelSequence => processor.InvalidChannelSequence;

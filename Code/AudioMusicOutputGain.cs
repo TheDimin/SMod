@@ -2,15 +2,21 @@ using System.Threading;
 using System.Threading.Tasks;
 namespace Smod;
 /// <summary>Output gain after the shared renderer. Keeps the native mixer active at mute.</summary>
-internal sealed class AudioMusicOutputGain : Sandbox.Audio.AudioProcessor<AudioMusicOutputGain.State>
+internal sealed class AudioMusicOutputGain
 {
+ Sandbox.Audio.AudioProcessor nativeProcessor;
+ internal Sandbox.Audio.AudioProcessor NativeProcessor => nativeProcessor ??= new NativeAdapter(this);
+ sealed class NativeAdapter(AudioMusicOutputGain owner) : Sandbox.Audio.AudioProcessor<State>
+ {
+  protected override void ProcessSingleChannel(Sandbox.Audio.AudioChannel channel,Span<float> input)=>owner.MixChannel(CurrentState,channel.Get(),input);
+ }
  internal sealed class Fade
  {
   internal float Initial;
   internal int Frames;
   internal readonly TaskCompletionSource<bool> Completion=new(TaskCreationOptions.RunContinuationsAsynchronously);
  }
- internal sealed class State : ListenerState
+ internal sealed class State : Sandbox.Audio.AudioProcessor.ListenerState
  {
   internal readonly float[] Current=new float[8];
   internal readonly bool[] Initialized=new bool[8];
@@ -35,7 +41,6 @@ internal sealed class AudioMusicOutputGain : Sandbox.Audio.AudioProcessor<AudioM
   return next.Completion.Task;
  }
  internal void CancelFade()=>Interlocked.Exchange(ref fade,null)?.Completion.TrySetResult(false);
- protected override void ProcessSingleChannel(Sandbox.Audio.AudioChannel channel,Span<float> input)=>MixChannel(CurrentState,channel.Get(),input);
  internal void MixChannel(State state,int channel,Span<float> input)
  {
   if(channel<0 || channel>=8)return;
