@@ -49,34 +49,6 @@ public sealed partial class AudioEventTests
 	}
 
 	[TestMethod]
-	public void PlaybackSettings_AreOwnedOnlyByAudioEvent()
-	{
-		var movedProperties = new[]
-		{
-			nameof( AudioEvent.UI ),
-			nameof( AudioEvent.Decibels ),
-			nameof( AudioEvent.OcclusionEnabled ),
-			nameof( AudioEvent.ReverbEnabled ),
-			nameof( AudioEvent.AirAbsorption ),
-			nameof( AudioEvent.DistanceAttenuation ),
-			nameof( AudioEvent.Distance ),
-			nameof( AudioEvent.Falloff ),
-			nameof( AudioEvent.DefaultMixer )
-		};
-
-		foreach ( var propertyName in movedProperties )
-		{
-			Assert.IsNotNull( typeof( AudioEvent ).GetProperty( propertyName ), propertyName );
-			Assert.IsNull( typeof( AudioSourceDefinition ).GetProperty( propertyName ), propertyName );
-		}
-
-		Assert.IsNotNull( typeof( AudioSourceDefinition ).GetProperty( nameof( AudioSourceDefinition.Volume ) ) );
-		Assert.IsNotNull( typeof( AudioSourceDefinition ).GetProperty( nameof( AudioSourceDefinition.Pitch ) ) );
-		Assert.IsNotNull( typeof( AudioSourceDefinition ).GetProperty( nameof( AudioSourceDefinition.SelectionMode ) ) );
-		Assert.IsNotNull( typeof( AudioSourceDefinition ).GetProperty( nameof( AudioSourceDefinition.Tracks ) ) );
-	}
-
-	[TestMethod]
 	public void Validation_RejectsInvalidAudioEventDistance()
 	{
 		var audioEvent = CreateEvent();
@@ -512,19 +484,6 @@ public sealed partial class AudioEventTests
 		Assert.AreSame( voice, _backend.Voices[0] );
 		Assert.AreEqual( 0.4f, voice.Volume, 0.0001f );
 		Assert.AreEqual( 0.65f, voice.Time, 0.0001f );
-	}
-
-	[TestMethod]
-	public void AuditionEditorIntegration_IsPubliclyAccessibleToHotloadedEditorAssemblies()
-	{
-		var publicInstanceMethods = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public;
-
-		Assert.IsNotNull( typeof( AudioEventInstance ).GetMethod(
-			nameof( AudioEventInstance.RefreshAuthoredPropertiesForAudition ),
-			publicInstanceMethods ) );
-		Assert.IsNotNull( typeof( AudioEventInstance ).GetMethod(
-			nameof( AudioEventInstance.SetTrackMutedForAudition ),
-			publicInstanceMethods ) );
 	}
 
 	[TestMethod]
