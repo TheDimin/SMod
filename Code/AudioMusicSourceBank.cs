@@ -20,10 +20,10 @@ internal sealed partial class AudioMusicSourceBank : IDisposable
  public long ResidentBytes => residentBytes;
  internal int PreparedRangeCount=>prepared.Count;
  public string LastBudgetRejection {get;private set;}
- bool Admit(long decodedFrames,long outputFrames,bool retainDecoded=false)
+ bool Admit(long decodedFrames,long outputFrames,bool retainDecoded=false,int sourceRate=44100)
  {
-  if(AudioMusicSourcePreparation.FitsBudget(residentBytes,decodedFrames,outputFrames,maximumBytes,retainDecoded))return true;
-  LastBudgetRejection=$"Resident={residentBytes}, decoded={decodedFrames*4}, prepared={(retainDecoded?0:outputFrames*4)}, scratch=8192, limit={maximumBytes} bytes.";
+  if(AudioMusicSourcePreparation.FitsBudget(residentBytes,decodedFrames,outputFrames,maximumBytes-(sourceRate==48000?AudioMusicResampler.ScratchBytes:0),retainDecoded))return true;
+  LastBudgetRejection=$"Resident={residentBytes}, decoded={decodedFrames*4}, prepared={(retainDecoded?0:outputFrames*4)}, scratch={8192+(sourceRate==48000?AudioMusicResampler.ScratchBytes:0)}, limit={maximumBytes} bytes.";
   return false;
  }
  public Task<short[]> PrepareAsync(AudioInstrument instrument,SoundEventTrack selectedSource,AudioTone master=null,AudioTone track=null)
@@ -51,8 +51,9 @@ internal sealed partial class AudioMusicSourceBank : IDisposable
    if(closed)throw new ObjectDisposedException(nameof(AudioMusicSourceBank));
    if(!await source.LoadAsync())throw new InvalidOperationException("Music source is not ready.");
    if(closed)throw new ObjectDisposedException(nameof(AudioMusicSourceBank));
-   if(source.Rate!=44100 || source.Channels!=2 || !float.IsFinite(source.Duration) || source.Duration<=0)
-    throw new InvalidOperationException("Shared music requires stereo 44100 Hz PCM.");
+   if(source.Rate is not (44100 or 48000) || source.Channels!=2 || !float.IsFinite(source.Duration) || source.Duration<=0)
+    throw new InvalidOperationException($"Shared music source {source.ResourcePath} requires stereo 44100 or 48000 Hz audio with positive duration; got {source.Rate} Hz, {source.Channels} channels, {source.Duration} seconds.");
+   var sourceRate=source.Rate;
    var frames=(long)Math.Round(source.Duration*44100d);
    var start=(long)Math.Round(offset*44100d);
    var count=length==0 ? frames-start : (long)Math.Round(length*44100d);
@@ -66,23 +67,23 @@ internal sealed partial class AudioMusicSourceBank : IDisposable
     prepared.Add(key,cached);residentBytes+=cached.Length*2L;return cached;
    }
    // Allow for metadata rounding before allocating the native decoded result.
-   var canRetain=AudioMusicSourcePreparation.CanRetainDecoded(start,count,frames,master,track);
-   if(!Admit(frames+1024,count,canRetain))return null;
+   var canRetain=sourceRate==44100 && AudioMusicSourcePreparation.CanRetainDecoded(start,count,frames,master,track);
+   if(!Admit((long)Math.Ceiling(source.Duration*(double)sourceRate)+1024,count,canRetain,sourceRate))return null;
    cancellation.Token.ThrowIfCancellationRequested();
    NativeDecodeCount++;AudioMusicPreparationCache.NativeDecodes++;
    var decoded=await source.GetSamplesInterleavedAsync();
    if(closed)throw new ObjectDisposedException(nameof(AudioMusicSourceBank));
-   if(decoded is null || decoded.Length%2!=0 || start+count>decoded.Length/2)
+   if(decoded is null || decoded.Length%2!=0 || start+count>AudioMusicResampler.OutputFrames(decoded.Length/2,sourceRate))
     throw new InvalidOperationException("Decoded music does not match its source range.");
-   canRetain=AudioMusicSourcePreparation.CanRetainDecoded(start,count,decoded.Length/2,master,track);
-   if(!Admit(decoded.Length/2,count,canRetain))return null;
+   canRetain=sourceRate==44100 && AudioMusicSourcePreparation.CanRetainDecoded(start,count,decoded.Length/2,master,track);
+   if(!Admit(decoded.Length/2,count,canRetain,sourceRate))return null;
    var callerThread=Environment.CurrentManagedThreadId;
    (short[] Pcm,bool OffThread) work;
    PreparationInProgress=true;
    try { work=await GameTask.RunInThreadAsync(async () =>
    {
     var workerThread=Environment.CurrentManagedThreadId;
-    var pcm=await AudioMusicSourcePreparation.PrepareOwnedAsync(decoded,(int)start,(int)count,master,track,GameTask.Yield,cancellation.Token);
+    var pcm=await AudioMusicSourcePreparation.PrepareOwnedAsync(decoded,(int)start,(int)count,master,track,GameTask.Yield,cancellation.Token,sourceRate);
     return (Pcm:pcm,OffThread:workerThread!=callerThread);
    }); } finally { PreparationInProgress=false; }
    if(closed)throw new ObjectDisposedException(nameof(AudioMusicSourceBank));
