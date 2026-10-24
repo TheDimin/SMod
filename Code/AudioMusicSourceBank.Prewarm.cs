@@ -27,8 +27,9 @@ internal sealed partial class AudioMusicSourceBank
     cancellation.Token.ThrowIfCancellationRequested();
     if(!await source.LoadAsync())throw new InvalidOperationException("Music prewarm source is not ready.");
     cancellation.Token.ThrowIfCancellationRequested();
-    if(source.Rate!=44100 || source.Channels!=2 || !float.IsFinite(source.Duration) || source.Duration<=0)
-     throw new InvalidOperationException("Shared music requires stereo 44100 Hz PCM.");
+    if(source.Rate is not (44100 or 48000) || source.Channels!=2 || !float.IsFinite(source.Duration) || source.Duration<=0)
+     throw new InvalidOperationException($"Shared music source {source.ResourcePath} requires stereo 44100 or 48000 Hz audio with positive duration; got {source.Rate} Hz, {source.Channels} channels, {source.Duration} seconds.");
+    var sourceRate=source.Rate;
     var frames=(long)Math.Round(source.Duration*44100d);
     if(frames>int.MaxValue/2)throw new InvalidOperationException("Music source is too large.");
     var requests=group.Select(range=>
@@ -56,7 +57,8 @@ internal sealed partial class AudioMusicSourceBank
     var borrowed=prepared.FirstOrDefault(pair=>ReferenceEquals(pair.Key.Source,source) && pair.Key.Start==0
      && pair.Key.Count>=neededEnd && pair.Key.MasterDb==0 && pair.Key.TrackDb==0).Value;
     var outputFrames=requests.Sum(key=>(long)key.Count);
-    if(!Admit(borrowed is null?frames+1024:0,outputFrames))return false;
+    var decodedRate=borrowed is null?sourceRate:44100;
+    if(!Admit(borrowed is null?(long)Math.Ceiling(source.Duration*(double)sourceRate)+1024:0,outputFrames,sourceRate:decodedRate))return false;
     short[] decoded=borrowed;
     if(decoded is null)
     {
@@ -65,9 +67,9 @@ internal sealed partial class AudioMusicSourceBank
      decoded=await source.GetSamplesInterleavedAsync();
     }
     cancellation.Token.ThrowIfCancellationRequested();
-    if(decoded is null || decoded.Length%2!=0 || neededEnd>decoded.Length/2)
+    if(decoded is null || decoded.Length%2!=0 || neededEnd>AudioMusicResampler.OutputFrames(decoded.Length/2,decodedRate))
      throw new InvalidOperationException("Decoded prewarm source does not contain all authored ranges.");
-    if(!Admit(borrowed is null?decoded.Length/2:0,outputFrames))return false;
+    if(!Admit(borrowed is null?decoded.Length/2:0,outputFrames,sourceRate:decodedRate))return false;
     var callerThread=Environment.CurrentManagedThreadId;
     var work=await GameTask.RunInThreadAsync(async()=>
     {
@@ -77,7 +79,7 @@ internal sealed partial class AudioMusicSourceBank
      {
       var key=requests[i];
       outputs[i]=await AudioMusicSourcePreparation.PrepareAsync(decoded,key.Start,key.Count,masterCopy,
-       new AudioTone{BassGainDb=key.TrackDb,BassFrequencyHz=key.TrackHz},GameTask.Yield,cancellation.Token);
+       new AudioTone{BassGainDb=key.TrackDb,BassFrequencyHz=key.TrackHz},GameTask.Yield,cancellation.Token,decodedRate);
      }
      return (Outputs:outputs,OffThread:workerThread!=callerThread);
     });

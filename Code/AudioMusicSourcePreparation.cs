@@ -24,25 +24,25 @@ internal static class AudioMusicSourcePreparation
   => firstFrame==0 && frameCount>0 && frameCount==decodedFrames
    && (master is null || master.IsValid && master.BassGainDb==0)
    && (track is null || track.IsValid && track.BassGainDb==0);
- internal static Task<short[]> PrepareOwnedAsync(short[] source,int firstFrame,int frameCount,AudioTone master,AudioTone track,Func<Task> yield=null,CancellationToken cancellation=default)
+ internal static Task<short[]> PrepareOwnedAsync(short[] source,int firstFrame,int frameCount,AudioTone master,AudioTone track,Func<Task> yield=null,CancellationToken cancellation=default,int sourceRate=44100)
  {
   ArgumentNullException.ThrowIfNull(source);
   cancellation.ThrowIfCancellationRequested();
-  if(source.Length%2==0 && CanRetainDecoded(firstFrame,frameCount,source.Length/2,master,track))return Task.FromResult(source);
-  return PrepareAsync(source,firstFrame,frameCount,master,track,yield,cancellation);
+  if(sourceRate==44100 && source.Length%2==0 && CanRetainDecoded(firstFrame,frameCount,source.Length/2,master,track))return Task.FromResult(source);
+  return PrepareAsync(source,firstFrame,frameCount,master,track,yield,cancellation,sourceRate);
  }
 
  internal static short[] Prepare(short[] source, int firstFrame, int frameCount, AudioTone master, AudioTone track)
   => PrepareAsync(source,firstFrame,frameCount,master,track).GetAwaiter().GetResult();
- internal static async Task<short[]> PrepareAsync(short[] source,int firstFrame,int frameCount,AudioTone master,AudioTone track,Func<Task> yield=null,CancellationToken cancellation=default)
+ internal static async Task<short[]> PrepareAsync(short[] source,int firstFrame,int frameCount,AudioTone master,AudioTone track,Func<Task> yield=null,CancellationToken cancellation=default,int sourceRate=44100)
  {
   ArgumentNullException.ThrowIfNull(source);
-  if(source.Length % 2 != 0 || firstFrame < 0 || frameCount < 1 || (long)firstFrame + frameCount > source.Length / 2)
+  if(source.Length % 2 != 0 || firstFrame < 0 || frameCount < 1 || (long)firstFrame + frameCount > AudioMusicResampler.OutputFrames(source.Length / 2,sourceRate))
    throw new ArgumentOutOfRangeException(nameof(frameCount));
   if(master is {IsValid:false} || track is {IsValid:false}) throw new ArgumentException("Invalid authored tone settings.");
   cancellation.ThrowIfCancellationRequested();
   var result = new short[checked(frameCount * 2)];
-  if((master?.BassGainDb ?? 0)==0 && (track?.BassGainDb ?? 0)==0)
+  if(sourceRate==44100 && (master?.BassGainDb ?? 0)==0 && (track?.BassGainDb ?? 0)==0)
   {
    for(var at=0;at<result.Length;at+=32768)
    {
@@ -61,7 +61,7 @@ internal static class AudioMusicSourcePreparation
    {
     cancellation.ThrowIfCancellationRequested();
     var count=Math.Min(block.Length,firstFrame+frameCount-at);
-    for(var i=0;i<count;i++)block[i]=source[(at+i)*2+channel]/32768f;
+    for(var i=0;i<count;i++)block[i]=sourceRate==44100 ? source[(at+i)*2+channel]/32768f : AudioMusicResampler.Sample(source,at+i,channel);
     var span=block.AsSpan(0,count);
     first.Process(span,master?.BassGainDb ?? 0,master?.BassFrequencyHz ?? 180);
     second.Process(span,track?.BassGainDb ?? 0,track?.BassFrequencyHz ?? 180);
@@ -69,7 +69,7 @@ internal static class AudioMusicSourcePreparation
     {
      if(at+i<firstFrame)continue;
      var sample=Math.Round(block[i]*32768d);
-     if(sample<short.MinValue || sample>short.MaxValue)throw new InvalidOperationException("Tone processing exceeds PCM headroom. Reduce the authored boost.");
+     if(sample<short.MinValue || sample>short.MaxValue)throw new InvalidOperationException("Music preparation exceeds PCM headroom. Reduce the authored boost.");
      result[(at+i-firstFrame)*2+channel]=(short)sample;
     }
     if(yield is not null && ((at-warmStart)/block.Length)%32==31)await yield();

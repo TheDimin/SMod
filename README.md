@@ -608,7 +608,7 @@ main-event overlay scheduler or define the duration of an admitted phrase.
 ### Shared continuous stem mixing (internal runtime)
 
 The shared PCM session can own 1–16 continuous stereo stems. Each stem must
-have the same frame count and use 44,100 Hz source data. The runtime snapshots
+have the same frame count and use prepared 44,100 Hz data. Source preparation accepts stereo 44,100 Hz and 48,000 Hz imports. It converts 48,000 Hz PCM in memory with a 128-tap Blackman-windowed sinc filter before applying tone controls. Source files and compression stay unchanged. Range positions use the shared 44,100 Hz clock. Preparation budgets include the native-rate decode, output range, and filter storage. Other formats fail with the source path and actual format in the error. The runtime snapshots
 source ranges and tone settings before loading. It prepares the stems within
 its configured memory budget before it starts the native output. A missing,
 over-budget, or misaligned stem prevents startup; do not start partial music.
