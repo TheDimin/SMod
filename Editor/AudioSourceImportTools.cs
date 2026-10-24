@@ -13,7 +13,8 @@ public static class AudioSourceImportTools
   var asset=await ExternalAudioSourceCatalog.ImportAsync(sourcePath);
   asset.MetaData.Set("compress",true);
   asset.MetaData.Set("bitrate",bitrate);
-  if(!await asset.CompileIfNeededAsync())throw new InvalidOperationException("Sound compile failed: "+asset.RelativePath);
+  await asset.CompileIfNeededAsync();
+  if(!asset.IsCompiledAndUpToDate || asset.IsCompileFailed)throw new InvalidOperationException("Sound compile failed: "+asset.RelativePath);
   var sound=Sandbox.SoundFile.Load(asset.Path);
   if(sound is null || !await sound.LoadAsync())throw new InvalidOperationException("Sound decode failed: "+asset.RelativePath);
   return new{Path=asset.RelativePath,Sound=sound.ResourcePath,Duration=sound.Duration,Channels=sound.Channels,Compressed=true,Bitrate=bitrate};
